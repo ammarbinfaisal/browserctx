@@ -6,6 +6,7 @@ import type { BrowserSessionState } from "@/session";
 import {
   captureActionables,
   captureAriaSnapshot,
+  captureSessionOverview,
   findTextInSnapshot,
   getSnapshotResponse,
 } from "@/utils/aria-snapshot";
@@ -39,6 +40,10 @@ const snapshotArgs = z.object({
 });
 
 const actionablesArgs = z.object({
+  sessionId: sessionIdSchema,
+});
+
+const overviewArgs = z.object({
   sessionId: sessionIdSchema,
 });
 
@@ -301,12 +306,25 @@ export const actionables: Tool = {
   schema: {
     name: "browser_actionables",
     description:
-      "Return all actionable refs from the current snapshot for one browser session. Use this as the default discovery step before browser_describe_ref or an action tool.",
+      "Return actionable refs from the current snapshot for one browser session, grouped by semantic page area. Use this as the default discovery step before browser_describe_ref or an action tool.",
     inputSchema: zodToJsonSchema(actionablesArgs),
   },
   handle: async (context, params) => {
     const { sessionId } = actionablesArgs.parse(params ?? {});
     return captureActionables(context, sessionId);
+  },
+};
+
+export const overview: Tool = {
+  schema: {
+    name: "browser_session_overview",
+    description:
+      "Return a compact LLM-oriented overview for one browser session, summarizing interactive areas, grouped refs, and page context before deeper inspection.",
+    inputSchema: zodToJsonSchema(overviewArgs),
+  },
+  handle: async (context, params) => {
+    const { sessionId } = overviewArgs.parse(params ?? {});
+    return captureSessionOverview(context, sessionId);
   },
 };
 

@@ -24,6 +24,7 @@ function setupExitWatchdog(server: Server) {
 const tools: Tool[] = [
   session.listSessions,
   session.state,
+  session.overview,
   session.actionables,
   session.snapshot,
   session.navigate,

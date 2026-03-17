@@ -18,6 +18,11 @@ export type ActionablePreview = {
   placeholder?: string;
   actions: string[];
   disabled: boolean;
+  inViewport: boolean;
+  landmark?: string;
+  heading?: string;
+  form?: string;
+  section?: string;
 };
 
 export type TextSearchMatch = {
@@ -29,6 +34,29 @@ export type TextSearchMatch = {
   href?: string;
   actions: string[];
   matchContext: string;
+};
+
+export type ActionableGroup = {
+  nodeId: string;
+  role?: string;
+  name?: string;
+  landmark?: string;
+  heading?: string;
+  form?: string;
+  section?: string;
+  inViewport: boolean;
+  itemCount: number;
+  actionables: ActionablePreview[];
+};
+
+export type ContextAnchorPreview = {
+  nodeId: string;
+  role?: string;
+  name?: string;
+  landmark?: string;
+  heading?: string;
+  form?: string;
+  section?: string;
 };
 
 function flattenNodes(nodes: BrowserSnapshotNode[]): BrowserSnapshotNode[] {
@@ -90,6 +118,9 @@ function formatActionableLine(node: ActionablePreview): string {
   if (node.placeholder) {
     parts.push(`placeholder="${node.placeholder}"`);
   }
+  if (node.inViewport) {
+    parts.push("in-viewport");
+  }
   if (node.disabled) {
     parts.push("disabled");
   }
@@ -97,53 +128,209 @@ function formatActionableLine(node: ActionablePreview): string {
   return `- ${parts.join(" | ")}`;
 }
 
+function formatContextSummary(
+  value: Pick<ActionablePreview, "landmark" | "heading" | "form" | "section">,
+): string | null {
+  const context = [value.landmark, value.heading, value.form, value.section].filter(
+    Boolean,
+  );
+  return context.length ? context.join(" / ") : null;
+}
+
+function toActionablePreview(node: BrowserSnapshotNode): ActionablePreview {
+  const properties = getProperties(node);
+  return {
+    ref: node.ref!,
+    nodeId: node.nodeId,
+    role: node.role,
+    name: node.name,
+    value: node.value,
+    href: getStringProperty(properties, "href") || undefined,
+    placeholder: getStringProperty(properties, "placeholder") || undefined,
+    actions: getStringArrayProperty(properties, "actions"),
+    disabled: getBooleanProperty(properties, "disabled"),
+    inViewport: getBooleanProperty(properties, "inViewport"),
+    landmark: getStringProperty(properties, "landmark") || undefined,
+    heading: getStringProperty(properties, "heading") || undefined,
+    form: getStringProperty(properties, "form") || undefined,
+    section: getStringProperty(properties, "section") || undefined,
+  } satisfies ActionablePreview;
+}
+
 export function extractActionablePreviews(
   snapshot: BrowserSnapshotResponse,
 ): ActionablePreview[] {
   const flattened = flattenNodes(snapshot.snapshot.root);
-  return flattened
-    .filter(isActionableNode)
-    .map((node) => {
-      const properties = getProperties(node);
-      return {
-        ref: node.ref!,
-        nodeId: node.nodeId,
-        role: node.role,
-        name: node.name,
-        value: node.value,
-        href: getStringProperty(properties, "href") || undefined,
-        placeholder: getStringProperty(properties, "placeholder") || undefined,
-        actions: getStringArrayProperty(properties, "actions"),
-        disabled: getBooleanProperty(properties, "disabled"),
-      } satisfies ActionablePreview;
-    });
+  return flattened.filter(isActionableNode).map(toActionablePreview);
+}
+
+function createGroupPreview(node: BrowserSnapshotNode): ActionableGroup {
+  const properties = getProperties(node);
+  return {
+    nodeId: node.nodeId,
+    role: node.role,
+    name: node.name,
+    landmark: getStringProperty(properties, "landmark") || undefined,
+    heading: getStringProperty(properties, "heading") || undefined,
+    form: getStringProperty(properties, "form") || undefined,
+    section: getStringProperty(properties, "section") || undefined,
+    inViewport: getBooleanProperty(properties, "inViewport"),
+    itemCount: 0,
+    actionables: [],
+  };
+}
+
+export function extractActionableGroups(
+  snapshot: BrowserSnapshotResponse,
+): ActionableGroup[] {
+  const groups: ActionableGroup[] = [];
+  const groupsByNodeId = new Map<string, ActionableGroup>();
+  let ungrouped: ActionableGroup | null = null;
+
+  const ensureGroup = (node: BrowserSnapshotNode) => {
+    let group = groupsByNodeId.get(node.nodeId);
+    if (!group) {
+      group = createGroupPreview(node);
+      groupsByNodeId.set(node.nodeId, group);
+      groups.push(group);
+    }
+    return group;
+  };
+
+  const ensureUngrouped = () => {
+    if (ungrouped) {
+      return ungrouped;
+    }
+
+    ungrouped = {
+      nodeId: "ungrouped",
+      role: "group",
+      name: "Ungrouped",
+      inViewport: false,
+      itemCount: 0,
+      actionables: [],
+    };
+    groups.push(ungrouped);
+    return ungrouped;
+  };
+
+  const visit = (
+    node: BrowserSnapshotNode,
+    currentGroup: ActionableGroup | null,
+  ) => {
+    let nextGroup = currentGroup;
+    if (isGroupNode(node)) {
+      nextGroup = ensureGroup(node);
+    } else if (isActionableNode(node)) {
+      const targetGroup = nextGroup ?? ensureUngrouped();
+      const preview = toActionablePreview(node);
+      targetGroup.actionables.push(preview);
+      targetGroup.itemCount = targetGroup.actionables.length;
+      targetGroup.inViewport = targetGroup.inViewport || preview.inViewport;
+    }
+
+    for (const child of node.children ?? []) {
+      visit(child, nextGroup);
+    }
+  };
+
+  for (const root of snapshot.snapshot.root) {
+    visit(root, null);
+  }
+
+  return groups.filter((group) => group.actionables.length > 0);
 }
 
 function extractContextAnchors(
   snapshot: BrowserSnapshotResponse,
-): BrowserSnapshotNode[] {
+): ContextAnchorPreview[] {
   return flattenNodes(snapshot.snapshot.root)
     .filter((node) => !isActionableNode(node) && !isGroupNode(node));
 }
 
-function formatContextNodeLine(node: BrowserSnapshotNode): string {
+export function extractContextAnchorPreviews(
+  snapshot: BrowserSnapshotResponse,
+): ContextAnchorPreview[] {
+  return extractContextAnchors(snapshot).map((node) => {
+    const properties = getProperties(node);
+    return {
+      nodeId: node.nodeId,
+      role: node.role,
+      name: node.name,
+      landmark: getStringProperty(properties, "landmark") || undefined,
+      heading: getStringProperty(properties, "heading") || undefined,
+      form: getStringProperty(properties, "form") || undefined,
+      section: getStringProperty(properties, "section") || undefined,
+    } satisfies ContextAnchorPreview;
+  });
+}
+
+function formatContextNodeLine(node: ContextAnchorPreview): string {
   const parts = [node.nodeId, node.role ?? "unknown", node.name ?? "unnamed"];
+  const context = formatContextSummary(node);
+  if (context) {
+    parts.push(context);
+  }
   return `- ${parts.join(" | ")}`;
+}
+
+function formatGroupHeader(group: ActionableGroup): string {
+  const parts = [group.name ?? "Unnamed group", group.role ?? "group"];
+  const context = formatContextSummary(group);
+  if (context) {
+    parts.push(context);
+  }
+  parts.push(`${group.itemCount} refs`);
+  if (group.inViewport) {
+    parts.push("in-viewport");
+  }
+  return `- ${parts.join(" | ")}`;
+}
+
+function formatGroupedActionables(
+  groups: ActionableGroup[],
+  options: { maxPerGroup?: number } = {},
+): string[] {
+  const { maxPerGroup } = options;
+  const lines: string[] = [];
+
+  for (const group of groups) {
+    lines.push(formatGroupHeader(group));
+    const actionables =
+      maxPerGroup == null
+        ? group.actionables
+        : group.actionables.slice(0, maxPerGroup);
+    lines.push(
+      ...actionables.map((actionable) => `  ${formatActionableLine(actionable).slice(2)}`),
+    );
+    if (
+      maxPerGroup != null &&
+      group.actionables.length > maxPerGroup
+    ) {
+      lines.push(`  - +${group.actionables.length - maxPerGroup} more refs`);
+    }
+  }
+
+  return lines;
 }
 
 function renderSnapshot(snapshot: BrowserSnapshotResponse): string {
   const actionables = extractActionablePreviews(snapshot);
-  const contextAnchors = extractContextAnchors(snapshot);
+  const groups = extractActionableGroups(snapshot);
+  const contextAnchors = extractContextAnchorPreviews(snapshot);
+  const inViewportCount = actionables.filter((actionable) => actionable.inViewport).length;
 
   const lines = [
     `- Snapshot Version: ${snapshot.snapshot.version}`,
     `- Actionable Refs: ${actionables.length}`,
+    `- Actionable Groups: ${groups.length}`,
+    `- In-Viewport Refs: ${inViewportCount}`,
     `- Context Anchors: ${contextAnchors.length}`,
   ];
 
-  if (actionables.length) {
-    lines.push("- Actionable Refs:");
-    lines.push(...actionables.map(formatActionableLine));
+  if (groups.length) {
+    lines.push("- Actionable Groups:");
+    lines.push(...formatGroupedActionables(groups, { maxPerGroup: 5 }));
   }
 
   if (contextAnchors.length) {
@@ -219,6 +406,8 @@ export async function captureActionables(
     preferCache: true,
   });
   const actionables = extractActionablePreviews(snapshot);
+  const groups = extractActionableGroups(snapshot);
+  const inViewportCount = actionables.filter((actionable) => actionable.inViewport).length;
 
   const lines = [
     `- Session ID: ${sessionId}`,
@@ -226,8 +415,10 @@ export async function captureActionables(
     `- Page Title: ${snapshot.page.title}`,
     `- Snapshot Version: ${snapshot.snapshot.version}`,
     `- Actionable Refs: ${actionables.length}`,
-    ...(actionables.length
-      ? ["- Actionable Refs:", ...actionables.map(formatActionableLine)]
+    `- Actionable Groups: ${groups.length}`,
+    `- In-Viewport Refs: ${inViewportCount}`,
+    ...(groups.length
+      ? ["- Actionable Groups:", ...formatGroupedActionables(groups)]
       : ["- No actionable refs found in the current snapshot."]),
   ];
 
@@ -238,6 +429,80 @@ export async function captureActionables(
       snapshotVersion: snapshot.snapshot.version,
       page: snapshot.page,
       actionables,
+      groups,
+    },
+  };
+}
+
+function summarizeRoleCounts(actionables: ActionablePreview[]): string {
+  const counts = new Map<string, number>();
+  for (const actionable of actionables) {
+    const key = actionable.role ?? "unknown";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([role, count]) => `${role}:${count}`)
+    .join(", ");
+}
+
+export async function captureSessionOverview(
+  context: Context,
+  sessionId: string,
+): Promise<ToolResult> {
+  const snapshot = await getSnapshotResponse(context, sessionId, {
+    preferCache: true,
+  });
+  const actionables = extractActionablePreviews(snapshot);
+  const groups = extractActionableGroups(snapshot);
+  const contextAnchors = extractContextAnchorPreviews(snapshot);
+  const inViewportCount = actionables.filter((actionable) => actionable.inViewport).length;
+  const visibleGroups = groups.filter((group) => group.inViewport).length;
+
+  const lines = [
+    `- Session ID: ${sessionId}`,
+    `- Page URL: ${snapshot.page.url}`,
+    `- Page Title: ${snapshot.page.title}`,
+    `- Snapshot Version: ${snapshot.snapshot.version}`,
+    `- Interactive Areas: ${groups.length} (${visibleGroups} in viewport)`,
+    `- Actionable Refs: ${actionables.length} (${inViewportCount} in viewport)`,
+    `- Role Counts: ${summarizeRoleCounts(actionables) || "none"}`,
+  ];
+
+  if (groups.length) {
+    lines.push("- Interactive Areas:");
+    lines.push(...formatGroupedActionables(groups, { maxPerGroup: 4 }));
+  } else {
+    lines.push("- No actionable refs found in the current snapshot.");
+  }
+
+  if (contextAnchors.length) {
+    lines.push("- Context Anchors:");
+    lines.push(...contextAnchors.slice(0, 8).map(formatContextNodeLine));
+    if (contextAnchors.length > 8) {
+      lines.push(`- +${contextAnchors.length - 8} more context anchors`);
+    }
+  }
+
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    structuredContent: {
+      sessionId,
+      snapshotVersion: snapshot.snapshot.version,
+      page: snapshot.page,
+      overview: {
+        actionables,
+        groups,
+        contextAnchors,
+        stats: {
+          actionableCount: actionables.length,
+          actionableGroups: groups.length,
+          inViewportCount,
+          visibleGroups,
+          roleCounts: summarizeRoleCounts(actionables),
+        },
+      },
     },
   };
 }
