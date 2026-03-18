@@ -821,6 +821,8 @@ export async function captureAriaSnapshot(
         text: `${status ? `${status}\n` : ""}- Session ID: ${sessionId}
 - Page URL: ${snapshot.page.url}
 - Page Title: ${snapshot.page.title}
+- Snapshot Shape: compact semantic tree; not a full DOM or full URL inventory
+- If a target or href is missing, use browser_actionables with filters, browser_find_text for a recommended ref, or browser_describe_ref for one ref
 ${renderDiscoveryState(discovery, {
   headingLabel: "Actionable Groups",
   maxPerGroup: 5,
@@ -834,6 +836,15 @@ ${renderDiscoveryState(discovery, {
       page: snapshot.page,
       snapshot: snapshot.snapshot,
       discovery,
+      guidance: {
+        snapshotShape: "compact-semantic-tree",
+        notFullDom: true,
+        elaborationTools: [
+          "browser_actionables",
+          "browser_find_text",
+          "browser_describe_ref",
+        ],
+      },
     },
   };
 }
