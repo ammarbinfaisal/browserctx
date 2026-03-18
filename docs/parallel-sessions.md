@@ -25,6 +25,7 @@ This package now exposes a stateless session-oriented MCP API instead of a singl
 - `browser_go_forward`
 - `browser_press_key`
 - `browser_wait`
+- `browser_run_js`
 - `browser_console_logs`
 - `browser_screenshot`
 

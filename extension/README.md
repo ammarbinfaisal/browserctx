@@ -35,3 +35,4 @@ You can change the URL from the popup.
 - Screenshots use `chrome.tabs.captureVisibleTab`, which may briefly activate the target tab if it is not already visible.
 - The popup shows all connected tabs so users can disconnect stale sessions without switching tabs first.
 - Snapshots are intentionally compact and action-first; use `browser_describe_ref` from the MCP side when a single ref needs more detail.
+- `browser_run_js` executes async snippets in the content-script world and emits per-run console entries back to the MCP side.

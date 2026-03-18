@@ -87,7 +87,8 @@ The extension should send notifications in this shape:
 - `browser_select_option` -> `{ "acknowledged": true }`
 - `browser_press_key` -> `{ "acknowledged": true }`
 - `browser_wait` -> `{ "acknowledged": true }`
-- `browser_get_console_logs` -> `unknown[]`
+- `browser_get_console_logs` -> console entry array
+- `browser_run_js` -> structured result with `success`, `result` or `error`, per-run `logs`, `runId`, and timing fields
 - `browser_screenshot` -> `string`
 - `browser_describe_ref` -> detailed element context for one `ref`
 
@@ -96,6 +97,7 @@ The extension should send notifications in this shape:
 - `browser.session.hello`
 - `browser.page.updated`
 - `browser.snapshot.updated`
+- `browser.console.entry` for per-run JS console streaming
 
 ## Snapshot Semantics
 
@@ -113,6 +115,7 @@ The extension should send notifications in this shape:
 The MCP server hides most cache/version bookkeeping from the LLM:
 
 - models call `browser_snapshot` when they need a fresh full semantic view of the page
+- models call `browser_run_js` when batching many DOM operations or queries into one round-trip is cheaper than multiple action tool calls
 - models call `browser_describe_ref` for deeper inspection of a single element
 - action tools operate on `ref`
 - the MCP returns lightweight page-change summaries based on invalidation events and cached snapshots
