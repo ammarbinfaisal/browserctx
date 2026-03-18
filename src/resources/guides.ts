@@ -39,7 +39,7 @@ Use this order when driving a page through the MCP tools:
 2. Call \`browser_session_overview\` first when you need to orient on a page quickly.
 3. Call \`browser_actionables\` with filters when you need concrete refs. It is bounded by default, so tighten the query before raising limits.
 4. Call \`browser_find_text\` when the next step is “find the best clickable thing matching this text”.
-5. Call \`browser_run_js\` when one tool call should batch many clicks, form updates, or DOM queries. Return structured data and use \`console.log\` for live debug output.
+5. Call \`browser_run_js\` when the model needs page-local batching across many targets or records, especially for discover/filter/check/dry-run/apply flows that would otherwise require many separate MCP calls. Return structured data and use \`console.log\` for live debug output.
 6. Call \`browser_describe_ref\` only for the specific ref that needs deeper context.
 7. Call \`browser_snapshot\` only when grouped refs are not enough and you need a broader semantic tree. Treat it as a compact semantic snapshot, not a full DOM or full URL inventory.
 8. Use action tools with the same explicit \`sessionId\`. Treat \`ref\` as the primary handle; \`element\` is optional metadata.
@@ -51,7 +51,7 @@ Heuristics:
 - Prefer \`browser_session_overview\` over \`browser_snapshot\` for initial page orientation.
 - Prefer \`browser_actionables\` over \`browser_snapshot\` when you already know you need DOM refs.
 - Prefer \`browser_find_text\` over a broad snapshot when you can name the thing you want.
-- Prefer \`browser_run_js\` over many small action calls when the task is naturally batch-shaped and benefits from shared local logic.
+- Prefer \`browser_run_js\` over many small action calls when the task is naturally batch-shaped and the model needs shared local logic for selection, validation, planning, or conditional execution.
 - If a visible target or href is missing from \`browser_snapshot\`, use \`browser_actionables\` with filters or \`browser_describe_ref\`; do not assume the snapshot is a full-page DOM dump.
 - Treat \`sessionId\` as stable for a tab across reconnects.
 - Treat \`pageVersion\` as the current interaction version for that page.

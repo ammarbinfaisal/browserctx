@@ -182,7 +182,7 @@ const runJsArgs = z.object({
     .string()
     .min(1)
     .describe(
-      "JavaScript function body to execute inside the page as an async snippet. Use this when one tool call should do many DOM steps or queries: bulk clicks, multi-field form entry, extracting lists or tables, or custom page logic. The snippet can use `window`, `document`, `args`, `browsermcp` helper methods, and `console.log/info/warn/error`. `return` a JSON-serializable value.",
+      "JavaScript function body to execute inside the page as an async snippet. Use this as a local batching primitive when the model needs custom in-page logic across many elements or records, such as discover/filter/validate/plan/apply flows that would otherwise require many separate MCP calls. The snippet can use `window`, `document`, `args`, `browsermcp` helper methods, and `console.log/info/warn/error`. `return` a JSON-serializable value.",
     ),
   args: z
     .unknown()
@@ -1100,7 +1100,7 @@ export const runJs: Tool = {
   schema: {
     name: "browser_run_js",
     description:
-      "Run an async JavaScript snippet inside one browser session. Use this for bulk page work in one round-trip: multiple clicks, multi-field form entry, extracting lists or tables, or custom DOM queries and transforms. The snippet can use `window`, `document`, `args`, `browsermcp` helpers, and `console.log/info/warn/error`; `return` a JSON-serializable value. Console output is streamed during execution when the client supports progress notifications and is always returned in the final result.",
+      "Run an async JavaScript snippet inside one browser session. Use this as a page-local batching primitive when the model needs its own selection, filtering, validation, dry-run, or apply logic over many DOM targets or data records, and many small MCP calls would be wasteful. The snippet can inspect the page, build a candidate set, perform checks, optionally execute actions, and return a structured summary in one or two calls. It can use `window`, `document`, `args`, `browsermcp` helpers, and `console.log/info/warn/error`; `return` a JSON-serializable value. Console output is streamed during execution when the client supports progress notifications and is always returned in the final result.",
     inputSchema: zodToJsonSchema(runJsArgs),
   },
   handle: async (context, params, extra) => {

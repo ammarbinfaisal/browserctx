@@ -60,7 +60,7 @@ When `BROWSERMCP_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the 
 3. Call `browser_session_overview` first when you need a compact page summary.
 4. Call `browser_actionables` when you need DOM refs. It returns a bounded grouped actionable inventory and accepts filters for query, roles, viewport, and limits.
 5. Call `browser_find_text` when you want a recommended actionable ref for a text query.
-6. Call `browser_run_js` when one tool call should batch multiple clicks, form updates, or DOM reads. The snippet can return structured data and stream `console` output through progress notifications when the client supports them.
+6. Call `browser_run_js` when the model needs page-local batching across many targets or records, especially for discover/filter/check/dry-run/apply flows that would otherwise require many separate MCP calls. The snippet can return structured data and stream `console` output through progress notifications when the client supports them.
 7. Call `browser_describe_ref` when one specific ref needs deeper context.
 8. Call `browser_snapshot` only when you need broader page context than the grouped actionable view provides.
 9. Use action tools normally. When the page version advances, the response already includes `nextDiscovery` and `nextRefs` for the next step.

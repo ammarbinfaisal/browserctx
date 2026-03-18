@@ -21,7 +21,7 @@ This MCP server is intended to be run as a standard stdio MCP server.
 3. Call `browser_session_overview` when the model first needs to understand page shape and likely interaction zones.
 4. Call `browser_actionables` on the sessions where DOM refs are needed. Treat it as the default grouped discovery step, and filter it before raising limits.
 5. Call `browser_find_text` when the model knows the text it wants and needs a `recommendedRef` for the next action.
-6. Use `browser_run_js` when many clicks, field updates, or DOM queries should happen in one tool call. Return a JSON-serializable value and use `console.log` for streamed debug output.
+6. Use `browser_run_js` when the model needs page-local batching across many targets: custom selection, filtering, validation, dry-run planning, and optional execution in one or two calls instead of many small MCP actions. Return a JSON-serializable value and use `console.log` for streamed debug output.
 7. Use `browser_click`, `browser_type`, `browser_select_option`, and other actions with explicit `sessionId`. Treat `ref` as the primary handle; `element` is optional metadata.
 8. Call `browser_describe_ref` only for the specific refs that need more context.
 9. Call `browser_snapshot` only when the model needs broader page context than the overview or filtered actionable grouping provides.

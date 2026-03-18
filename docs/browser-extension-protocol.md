@@ -115,7 +115,7 @@ The extension should send notifications in this shape:
 The MCP server hides most cache/version bookkeeping from the LLM:
 
 - models call `browser_snapshot` when they need a fresh full semantic view of the page
-- models call `browser_run_js` when batching many DOM operations or queries into one round-trip is cheaper than multiple action tool calls
+- models call `browser_run_js` when they need their own page-local selection, filtering, validation, dry-run, or apply logic over many targets, and collapsing that work into one or two calls is cheaper than many fine-grained tool calls
 - models call `browser_describe_ref` for deeper inspection of a single element
 - action tools operate on `ref`
 - the MCP returns lightweight page-change summaries based on invalidation events and cached snapshots
