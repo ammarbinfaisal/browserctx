@@ -3,10 +3,15 @@ import { RawData, WebSocket, WebSocketServer } from "ws";
 import { mcpConfig } from "@/config";
 import { Context } from "@/context";
 import type {
+  DaemonNotificationEnvelope,
   DaemonRequestEnvelope,
   DaemonResponseEnvelope,
   DaemonRequestType,
 } from "@/daemon/protocol";
+import type {
+  BrowserNotificationMap,
+  BrowserNotificationType,
+} from "@/protocol/messages";
 import { logException, logInfo } from "@/utils/log";
 import { createWebSocketServer } from "@/ws";
 
@@ -30,6 +35,13 @@ function parseRequest(raw: RawData): DaemonRequestEnvelope | null {
 }
 
 function sendResponse(ws: WebSocket, message: DaemonResponseEnvelope) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify(message));
+}
+
+function sendNotification(ws: WebSocket, message: DaemonNotificationEnvelope) {
   if (ws.readyState !== WebSocket.OPEN) {
     return;
   }
@@ -130,6 +142,15 @@ async function handleRequest(
           },
         };
       }
+      case "subscribe_browser_notifications":
+      case "unsubscribe_browser_notifications":
+        return {
+          id: request.id,
+          ok: true,
+          result: {
+            acknowledged: true,
+          },
+        };
       default:
         throw new Error(`Unsupported daemon method: ${request.method}`);
     }
@@ -159,6 +180,27 @@ async function createControlServer(): Promise<WebSocketServer> {
 
 export async function startDaemonRuntime() {
   const context = Context.createLocal();
+  const controlClientSubscriptions = new Map<WebSocket, Set<string>>();
+
+  const forwardBrowserNotification = (
+    sessionId: string,
+    event: BrowserNotificationType,
+    payload: BrowserNotificationMap[BrowserNotificationType]["payload"],
+  ) => {
+    for (const [client, subscriptions] of controlClientSubscriptions) {
+      if (!subscriptions.has(sessionId)) {
+        continue;
+      }
+      sendNotification(client, {
+        event: "browser_notification",
+        params: {
+          sessionId,
+          event,
+          payload,
+        },
+      });
+    }
+  };
 
   const browserWss = await createWebSocketServer(
     mcpConfig.defaultWsPort,
@@ -170,7 +212,10 @@ export async function startDaemonRuntime() {
   });
   browserWss.on("connection", (websocket) => {
     logInfo("daemon.lifecycle", "Browser extension connected to daemon");
-    context.addSession(websocket);
+    const session = context.addSession(websocket);
+    session.subscribeToNotifications((event, payload) => {
+      forwardBrowserNotification(session.id, event, payload);
+    });
   });
 
   const controlWss = await createControlServer();
@@ -180,11 +225,24 @@ export async function startDaemonRuntime() {
   });
   controlWss.on("connection", (ws) => {
     logInfo("daemon.lifecycle", "Daemon control client connected");
+    controlClientSubscriptions.set(ws, new Set());
     ws.on("message", async (raw) => {
       const request = parseRequest(raw);
       if (!request) {
         logInfo("daemon.errors", "Ignoring invalid daemon request payload");
         return;
+      }
+
+      if (request.method === "subscribe_browser_notifications") {
+        controlClientSubscriptions.get(ws)?.add(
+          (request.params as { sessionId: string }).sessionId,
+        );
+      }
+
+      if (request.method === "unsubscribe_browser_notifications") {
+        controlClientSubscriptions.get(ws)?.delete(
+          (request.params as { sessionId: string }).sessionId,
+        );
       }
 
       const response = await handleRequest(context, request);
@@ -194,6 +252,9 @@ export async function startDaemonRuntime() {
         response,
       });
       sendResponse(ws, response);
+    });
+    ws.on("close", () => {
+      controlClientSubscriptions.delete(ws);
     });
   });
 

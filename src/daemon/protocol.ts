@@ -1,4 +1,6 @@
 import type {
+  BrowserNotificationMap,
+  BrowserNotificationType,
   BrowserRequestMap,
   BrowserRequestType,
   BrowserSnapshotResponse,
@@ -55,6 +57,22 @@ export type DaemonRequestMap = {
       result: BrowserRequestMap[BrowserRequestType]["result"];
     };
   };
+  subscribe_browser_notifications: {
+    params: {
+      sessionId: string;
+    };
+    result: {
+      acknowledged: true;
+    };
+  };
+  unsubscribe_browser_notifications: {
+    params: {
+      sessionId: string;
+    };
+    result: {
+      acknowledged: true;
+    };
+  };
 };
 
 export type DaemonRequestType = keyof DaemonRequestMap;
@@ -63,6 +81,25 @@ export type DaemonRequestEnvelope<T extends DaemonRequestType = DaemonRequestTyp
   id: string;
   method: T;
   params: DaemonRequestMap[T]["params"];
+};
+
+export type DaemonNotificationMap = {
+  browser_notification: {
+    params: {
+      sessionId: string;
+      event: BrowserNotificationType;
+      payload: BrowserNotificationMap[BrowserNotificationType]["payload"];
+    };
+  };
+};
+
+export type DaemonNotificationType = keyof DaemonNotificationMap;
+
+export type DaemonNotificationEnvelope<
+  T extends DaemonNotificationType = DaemonNotificationType,
+> = {
+  event: T;
+  params: DaemonNotificationMap[T]["params"];
 };
 
 export type DaemonSuccessEnvelope<T extends DaemonRequestType = DaemonRequestType> = {

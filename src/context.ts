@@ -3,7 +3,12 @@ import { WebSocket } from "ws";
 import { DaemonClient } from "@/daemon/client";
 import type { DaemonSessionState } from "@/daemon/protocol";
 import { BrowserRequestMap, BrowserRequestType } from "@/protocol/messages";
-import { BrowserSession, BrowserSessionState, SessionManager } from "@/session";
+import {
+  BrowserSession,
+  BrowserSessionNotificationListener,
+  BrowserSessionState,
+  SessionManager,
+} from "@/session";
 
 type CachedSnapshotFreshness = "current" | "fresh";
 
@@ -129,6 +134,25 @@ export class Context {
       type,
       payload,
       options.timeoutMs,
+    );
+  }
+
+  async subscribeToBrowserNotifications(
+    sessionId: string,
+    listener: BrowserSessionNotificationListener,
+  ): Promise<() => Promise<void>> {
+    if (this.sessionManager) {
+      const unsubscribe = this.sessionManager
+        .get(sessionId)
+        .subscribeToNotifications(listener);
+      return async () => {
+        unsubscribe();
+      };
+    }
+
+    return await this.daemonClient!.subscribeToBrowserNotifications(
+      sessionId,
+      listener,
     );
   }
 

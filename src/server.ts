@@ -27,6 +27,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       capabilities: {
         tools: {},
         resources: {},
+        logging: {},
       },
     },
   );
@@ -40,7 +41,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     return { resources: resources.map((resource) => resource.schema) };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const tool = tools.find((tool) => tool.schema.name === request.params.name);
     if (!tool) {
       logInfo("mcp.calls", "MCP tool not found", {
@@ -67,7 +68,7 @@ export async function createServerWithTools(options: Options): Promise<Server> {
     }
 
     try {
-      const result = await tool.handle(context, request.params.arguments);
+      const result = await tool.handle(context, request.params.arguments, extra);
       logInfo("mcp.calls", "MCP tool call completed", {
         tool: request.params.name,
         durationMs: Date.now() - startedAt,

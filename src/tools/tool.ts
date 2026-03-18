@@ -18,11 +18,24 @@ export type ToolResult = {
   structuredContent?: Record<string, unknown>;
 };
 
+export type ToolCallExtra = {
+  signal: AbortSignal;
+  _meta?: {
+    progressToken?: string | number;
+    [key: string]: unknown;
+  };
+  sendNotification: (notification: {
+    method: string;
+    params?: Record<string, unknown>;
+  }) => Promise<void>;
+};
+
 export type Tool = {
   schema: ToolSchema;
   handle: (
     context: Context,
     params?: Record<string, any>,
+    extra?: ToolCallExtra,
   ) => Promise<ToolResult>;
 };
 

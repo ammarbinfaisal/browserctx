@@ -38,6 +38,7 @@ const tools: Tool[] = [
   session.pressKey,
   session.wait,
   session.getConsoleLogs,
+  session.runJs,
   session.screenshot,
   session.describeRef,
   session.findText,

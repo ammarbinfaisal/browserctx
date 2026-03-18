@@ -5,6 +5,8 @@ import { RawData, WebSocket } from "ws";
 
 import { mcpConfig } from "@/config";
 import type {
+  DaemonNotificationEnvelope,
+  DaemonNotificationType,
   DaemonRequestEnvelope,
   DaemonRequestMap,
   DaemonRequestType,
@@ -12,6 +14,8 @@ import type {
   DaemonSessionState,
 } from "@/daemon/protocol";
 import type {
+  BrowserNotificationMap,
+  BrowserNotificationType,
   BrowserRequestMap,
   BrowserRequestType,
   BrowserSnapshotResponse,
@@ -26,7 +30,23 @@ type PendingRequest = {
   timeout: NodeJS.Timeout;
 };
 
-function parseResponse(raw: RawData): DaemonResponseEnvelope | null {
+type BrowserNotificationListener = (
+  event: BrowserNotificationType,
+  payload: BrowserNotificationMap[BrowserNotificationType]["payload"],
+) => void;
+
+type ParsedDaemonMessage =
+  | {
+      kind: "response";
+      message: DaemonResponseEnvelope;
+    }
+  | {
+      kind: "notification";
+      message: DaemonNotificationEnvelope;
+    }
+  | null;
+
+function parseMessage(raw: RawData): ParsedDaemonMessage {
   const text =
     typeof raw === "string"
       ? raw
@@ -35,9 +55,20 @@ function parseResponse(raw: RawData): DaemonResponseEnvelope | null {
         : raw.toString();
 
   try {
-    const message = JSON.parse(text) as DaemonResponseEnvelope;
+    const message = JSON.parse(text) as
+      | DaemonNotificationEnvelope
+      | DaemonResponseEnvelope;
+    if ("event" in message) {
+      return {
+        kind: "notification",
+        message,
+      };
+    }
     if ("id" in message && "ok" in message) {
-      return message;
+      return {
+        kind: "response",
+        message,
+      };
     }
     return null;
   } catch {
@@ -126,13 +157,24 @@ async function ensureDaemonAvailable() {
 
 export class DaemonClient {
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly browserNotificationListeners = new Map<
+    string,
+    Set<BrowserNotificationListener>
+  >();
 
   private constructor(private readonly ws: WebSocket) {
     ws.on("message", (raw) => {
-      const message = parseResponse(raw);
-      if (!message) {
+      const parsed = parseMessage(raw);
+      if (!parsed) {
         return;
       }
+
+      if (parsed.kind === "notification") {
+        this.handleNotification(parsed.message);
+        return;
+      }
+
+      const message = parsed.message;
 
       const pending = this.pending.get(message.id);
       if (!pending) {
@@ -237,6 +279,39 @@ export class DaemonClient {
     return result.result as BrowserRequestMap[T]["result"];
   }
 
+  async subscribeToBrowserNotifications(
+    sessionId: string,
+    listener: BrowserNotificationListener,
+  ): Promise<() => Promise<void>> {
+    const listeners =
+      this.browserNotificationListeners.get(sessionId) ??
+      new Set<BrowserNotificationListener>();
+    const firstListener = listeners.size === 0;
+    listeners.add(listener);
+    this.browserNotificationListeners.set(sessionId, listeners);
+
+    if (firstListener) {
+      await this.send("subscribe_browser_notifications", { sessionId });
+    }
+
+    return async () => {
+      const current = this.browserNotificationListeners.get(sessionId);
+      if (!current) {
+        return;
+      }
+      current.delete(listener);
+      if (current.size > 0) {
+        return;
+      }
+      this.browserNotificationListeners.delete(sessionId);
+      if (this.ws.readyState === WebSocket.OPEN) {
+        await this.send("unsubscribe_browser_notifications", {
+          sessionId,
+        }).catch(() => undefined);
+      }
+    };
+  }
+
   private async send<T extends DaemonRequestType>(
     method: T,
     params: DaemonRequestMap[T]["params"],
@@ -281,5 +356,20 @@ export class DaemonClient {
         reject(error);
       });
     }) as Promise<DaemonRequestMap[T]["result"]>;
+  }
+
+  private handleNotification(message: DaemonNotificationEnvelope<DaemonNotificationType>) {
+    if (message.event !== "browser_notification") {
+      return;
+    }
+
+    const listeners = this.browserNotificationListeners.get(message.params.sessionId);
+    if (!listeners?.size) {
+      return;
+    }
+
+    for (const listener of listeners) {
+      listener(message.params.event, message.params.payload);
+    }
   }
 }

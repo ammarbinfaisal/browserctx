@@ -280,6 +280,8 @@
         return performSelectOption(payload);
       case "browser_press_key":
         return performPressKey(payload);
+      case "browser_run_js":
+        return performRunJs(payload);
       case "browser_wait":
         await wait(Math.max(0, payload.time * 1000));
         return { acknowledged: true };
@@ -1297,6 +1299,356 @@
     );
   }
 
+  async function performRunJs(payload) {
+    checkExpectedVersion(payload);
+    const startedAtMs = Date.now();
+    const startedAt = new Date(startedAtMs).toISOString();
+    const runId = typeof payload.runId === "string" ? payload.runId : undefined;
+    const logs = [];
+    const interactionSummary = {
+      clicks: 0,
+      types: 0,
+      selects: 0,
+      keypresses: 0,
+      scrolls: 0,
+      focuses: 0,
+    };
+    const consoleProxy = createRunJsConsole(logs, runId);
+    const browsermcp = createRunJsHelpers(interactionSummary);
+
+    try {
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+      const runner = new AsyncFunction(
+        "args",
+        "browsermcp",
+        "console",
+        "window",
+        "document",
+        payload.code,
+      );
+      const rawResult = await withTimeout(
+        Promise.resolve(
+          runner(payload.args, browsermcp, consoleProxy, window, document),
+        ),
+        payload.timeoutMs ?? 30000,
+        "browser_run_js timed out",
+      );
+
+      scheduleRunJsInteractionSummary(interactionSummary);
+      return buildRunJsResponse({
+        finishedAt: new Date().toISOString(),
+        logs,
+        result: serializeForWire(rawResult),
+        runId,
+        startedAt,
+        startedAtMs,
+        success: true,
+      });
+    } catch (error) {
+      scheduleRunJsInteractionSummary(interactionSummary);
+      return buildRunJsResponse({
+        error: normalizeRunJsError(error),
+        finishedAt: new Date().toISOString(),
+        logs,
+        runId,
+        startedAt,
+        startedAtMs,
+        success: false,
+      });
+    }
+  }
+
+  function createRunJsConsole(logs, runId) {
+    const makeLogger = (level) => (...args) => {
+      const entry = {
+        level,
+        args: args.map(stringifyConsoleArg),
+        timestamp: new Date().toISOString(),
+        source: "run_js",
+      };
+      logs.push(entry);
+      recordConsoleEntry(entry, runId);
+    };
+
+    return {
+      log: makeLogger("log"),
+      info: makeLogger("info"),
+      warn: makeLogger("warn"),
+      error: makeLogger("error"),
+    };
+  }
+
+  function createRunJsHelpers(interactionSummary) {
+    return {
+      query(selector, root) {
+        return resolveQueryRoot(root).querySelector(selector);
+      },
+      queryAll(selector, root) {
+        return Array.from(resolveQueryRoot(root).querySelectorAll(selector));
+      },
+      async click(target) {
+        const element = resolveRunJsTarget(target);
+        element.scrollIntoView({ block: "center", inline: "center" });
+        dispatchMouseEvent(element, "mouseover");
+        dispatchMouseEvent(element, "mousedown");
+        dispatchMouseEvent(element, "mouseup");
+        element.click();
+        interactionSummary.clicks += 1;
+        return summarizeElement(element);
+      },
+      async type(target, text, options = {}) {
+        const element = resolveRunJsTarget(target);
+        element.scrollIntoView({ block: "center", inline: "center" });
+        element.focus();
+
+        if (
+          element instanceof HTMLInputElement ||
+          element instanceof HTMLTextAreaElement
+        ) {
+          setFormValue(element, String(text));
+        } else if (element instanceof HTMLElement && element.isContentEditable) {
+          element.textContent = String(text);
+          element.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        } else {
+          throw new Error(`Unsupported element for typing: ${element.tagName}`);
+        }
+
+        if (options.submit) {
+          dispatchKeyboardEvent(element, "keydown", "Enter");
+          dispatchKeyboardEvent(element, "keyup", "Enter");
+          if (element.form) {
+            element.form.requestSubmit();
+          }
+        }
+
+        interactionSummary.types += 1;
+        return summarizeElement(element);
+      },
+      async select(target, values) {
+        const element = resolveRunJsTarget(target);
+        if (!(element instanceof HTMLSelectElement)) {
+          throw new Error("Target is not a select element");
+        }
+
+        const nextValues = Array.isArray(values) ? values : [values];
+        const selectedValues = new Set(nextValues.map((value) => String(value)));
+        for (const option of element.options) {
+          option.selected = selectedValues.has(option.value);
+        }
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+        interactionSummary.selects += 1;
+        return summarizeElement(element);
+      },
+      async press(key, target) {
+        const element = target ? resolveRunJsTarget(target) : document.activeElement || document.body;
+        dispatchKeyboardEvent(element, "keydown", String(key));
+        dispatchKeyboardEvent(element, "keyup", String(key));
+        interactionSummary.keypresses += 1;
+        return summarizeElement(element);
+      },
+      async focus(target) {
+        const element = resolveRunJsTarget(target);
+        element.focus();
+        interactionSummary.focuses += 1;
+        return summarizeElement(element);
+      },
+      async scrollIntoView(target, options) {
+        const element = resolveRunJsTarget(target);
+        element.scrollIntoView(options || { block: "center", inline: "center" });
+        interactionSummary.scrolls += 1;
+        return summarizeElement(element);
+      },
+      wait,
+      refs() {
+        return Array.from(state.refs.entries()).map(([ref, element]) => ({
+          ref,
+          element: summarizeElement(element),
+        }));
+      },
+    };
+  }
+
+  function resolveQueryRoot(root) {
+    if (!root) {
+      return document;
+    }
+    if (typeof root === "string") {
+      const element = document.querySelector(root);
+      if (!element) {
+        throw new Error(`No root matched selector: ${root}`);
+      }
+      return element;
+    }
+    if (root instanceof Element || root instanceof Document) {
+      return root;
+    }
+    throw new Error("Query root must be a selector, Element, or Document");
+  }
+
+  function resolveRunJsTarget(target) {
+    if (target instanceof Element) {
+      return target;
+    }
+    if (typeof target === "string") {
+      const element = document.querySelector(target);
+      if (!element) {
+        throw new Error(`No element matched selector: ${target}`);
+      }
+      return element;
+    }
+    if (target && typeof target === "object" && typeof target.ref === "string") {
+      return findElementByRef(target.ref);
+    }
+    throw new Error("Target must be a selector string, Element, or { ref } object");
+  }
+
+  function scheduleRunJsInteractionSummary(interactionSummary) {
+    const actionCount = Object.values(interactionSummary).reduce(
+      (total, count) => total + count,
+      0,
+    );
+    if (!actionCount) {
+      return;
+    }
+
+    const summary = Object.entries(interactionSummary)
+      .filter(([, count]) => count > 0)
+      .map(([action, count]) => `${count} ${action}`)
+      .join(", ");
+    scheduleSnapshotUpdate("input", "subtree", `browser_run_js: ${summary}`);
+  }
+
+  function buildRunJsResponse(options) {
+    return {
+      success: options.success,
+      ...(options.success ? { result: options.result } : { error: options.error }),
+      logs: options.logs,
+      runId: options.runId,
+      startedAt: options.startedAt,
+      finishedAt: options.finishedAt,
+      durationMs: Math.max(0, Date.now() - options.startedAtMs),
+    };
+  }
+
+  function normalizeRunJsError(error) {
+    if (error instanceof Error) {
+      return {
+        message: error.message,
+        name: error.name,
+        stack: error.stack,
+      };
+    }
+    return {
+      message: String(error),
+    };
+  }
+
+  function stringifyConsoleArg(value) {
+    const serialized = serializeForWire(value);
+    if (typeof serialized === "string") {
+      return serialized;
+    }
+    try {
+      return JSON.stringify(serialized);
+    } catch (_error) {
+      return String(serialized);
+    }
+  }
+
+  function serializeForWire(value, depth = 0, seen = new WeakSet()) {
+    if (
+      value == null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      return value;
+    }
+
+    if (typeof value === "undefined") {
+      return null;
+    }
+
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+
+    if (typeof value === "function") {
+      return `[Function ${value.name || "anonymous"}]`;
+    }
+
+    if (value instanceof Error) {
+      return normalizeRunJsError(value);
+    }
+
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    if (value instanceof Element) {
+      return summarizeElement(value);
+    }
+
+    if (value instanceof Node) {
+      return {
+        nodeType: value.nodeType,
+        text: normalizeText(value.textContent, 160),
+      };
+    }
+
+    if (depth >= 4) {
+      return "[MaxDepth]";
+    }
+
+    if (Array.isArray(value)) {
+      return value.slice(0, 200).map((entry) => serializeForWire(entry, depth + 1, seen));
+    }
+
+    if (typeof value === "object") {
+      if (seen.has(value)) {
+        return "[Circular]";
+      }
+      seen.add(value);
+      const result = {};
+      for (const [key, entry] of Object.entries(value).slice(0, 200)) {
+        result[key] = serializeForWire(entry, depth + 1, seen);
+      }
+      return result;
+    }
+
+    return String(value);
+  }
+
+  function summarizeElement(element) {
+    return {
+      tagName: element.tagName.toLowerCase(),
+      id: element.id || undefined,
+      role: getRole(element) || undefined,
+      name: getNodeName(element) || undefined,
+      text: normalizeText(element.textContent, 160) || undefined,
+      ref: state.elementRefs.get(element),
+    };
+  }
+
+  async function withTimeout(promise, timeoutMs, message) {
+    let timeoutId = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(new Error(message));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId != null) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
   function installMutationObserver() {
     const observer = new MutationObserver((mutations) => {
       if (!isControllerActive()) {
@@ -1384,6 +1736,19 @@
     }, 120);
   }
 
+  function recordConsoleEntry(entry, runId) {
+    state.consoleLogs.push(entry);
+    if (state.consoleLogs.length > 200) {
+      state.consoleLogs.splice(0, state.consoleLogs.length - 200);
+    }
+    if (runId) {
+      sendSocketNotification("browser.console.entry", {
+        entry,
+        runId,
+      });
+    }
+  }
+
   function installConsoleBridge() {
     window.addEventListener("message", (event) => {
       if (!isControllerActive()) {
@@ -1393,10 +1758,13 @@
       if (event.source !== window || event.data?.source !== "browsermcp-page-console") {
         return;
       }
-      state.consoleLogs.push(event.data.entry);
-      if (state.consoleLogs.length > 200) {
-        state.consoleLogs.splice(0, state.consoleLogs.length - 200);
-      }
+      recordConsoleEntry(
+        {
+          ...event.data.entry,
+          source: event.data.entry?.source || "page",
+        },
+        undefined,
+      );
     });
   }
 

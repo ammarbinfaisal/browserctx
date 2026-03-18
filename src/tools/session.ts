@@ -1,7 +1,14 @@
+import { randomUUID } from "node:crypto";
+
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { mcpConfig } from "@/config";
+import type {
+  BrowserConsoleEntry,
+  BrowserConsoleEntryNotification,
+  BrowserRunJsResult,
+} from "@/protocol/messages";
 import type { BrowserSessionState } from "@/session";
 import {
   captureActionables,
@@ -13,7 +20,7 @@ import {
 } from "@/utils/aria-snapshot";
 
 import type { Context } from "@/context";
-import type { Tool, ToolResult } from "./tool";
+import type { Tool, ToolCallExtra, ToolResult } from "./tool";
 
 const sessionIdSchema = z
   .string()
@@ -169,6 +176,28 @@ const getConsoleLogsArgs = z.object({
   sessionId: sessionIdSchema,
 });
 
+const runJsArgs = z.object({
+  sessionId: sessionIdSchema,
+  code: z
+    .string()
+    .min(1)
+    .describe(
+      "JavaScript function body to execute inside the page as an async snippet. Use this when one tool call should do many DOM steps or queries: bulk clicks, multi-field form entry, extracting lists or tables, or custom page logic. The snippet can use `window`, `document`, `args`, `browsermcp` helper methods, and `console.log/info/warn/error`. `return` a JSON-serializable value.",
+    ),
+  args: z
+    .unknown()
+    .optional()
+    .describe("Optional JSON-serializable input passed to the snippet as `args`."),
+  pageVersion: pageVersionSchema,
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(120000)
+    .optional()
+    .describe("Maximum time to allow the snippet to run before failing."),
+});
+
 const screenshotArgs = z.object({
   sessionId: sessionIdSchema,
 });
@@ -294,6 +323,38 @@ async function staleRefResult(
   };
 }
 
+async function stalePageVersionResult(
+  context: Context,
+  sessionId: string,
+  pageVersion: number | undefined,
+): Promise<ToolResult> {
+  const nextDiscovery = await getNextDiscoverySelection(context, sessionId);
+  return {
+    content: [
+      {
+        type: "text",
+        text: [
+          "Action failed: the supplied pageVersion is stale.",
+          pageVersion != null
+            ? `Page has changed since page version ${pageVersion}.`
+            : "Page has changed since this action plan was prepared.",
+          `Fresh next-step refs for page version ${nextDiscovery.pageVersion} are attached below.`,
+          ...renderDiscoverySelection(nextDiscovery, {
+            headingLabel: "Retry With These Refs",
+          }),
+        ].join("\n"),
+      },
+    ],
+    isError: true,
+    structuredContent: {
+      error: mcpConfig.errors.staleRef,
+      pageVersion,
+      nextDiscovery,
+      nextRefs: nextDiscovery.recommendedActionables,
+    },
+  };
+}
+
 function formatChangeLines(sessionState: BrowserSessionState): string[] {
   const change = sessionState.lastChange;
   if (!change) {
@@ -332,6 +393,70 @@ function formatChangeLines(sessionState: BrowserSessionState): string[] {
     );
   }
   return lines;
+}
+
+function compactSessionState(session: BrowserSessionState) {
+  return {
+    sessionId: session.sessionId,
+    connectedAt: session.connectedAt,
+    status: session.status,
+    page: session.page,
+    pageVersion: session.pageVersion,
+    capabilities: session.capabilities,
+    extensionVersion: session.extensionVersion,
+    browserName: session.browserName,
+    userAgent: session.userAgent,
+  };
+}
+
+function formatConsoleEntry(entry: BrowserConsoleEntry): string {
+  return [
+    entry.timestamp,
+    entry.level.toUpperCase(),
+    entry.source ? `[${entry.source}]` : null,
+    entry.args.join(" "),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function renderJson(value: unknown): string {
+  if (value == null) {
+    return String(value);
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+async function emitProgressMessage(
+  extra: ToolCallExtra | undefined,
+  progress: number,
+  message: string,
+) {
+  if (!extra) {
+    return;
+  }
+  const progressToken = extra?._meta?.progressToken;
+  if (progressToken == null) {
+    return;
+  }
+
+  await extra.sendNotification({
+    method: "notifications/progress",
+    params: {
+      progressToken,
+      progress,
+      message,
+    },
+  });
 }
 
 async function actionResult(
@@ -608,7 +733,9 @@ export const listSessions: Tool = {
       ),
     ].join("\n");
 
-    return textResult(text, { sessions: sessionStates });
+    return textResult(text, {
+      sessions: sessionStates.map(compactSessionState),
+    });
   },
 };
 
@@ -638,7 +765,7 @@ export const snapshot: Tool = {
   schema: {
     name: "browser_snapshot",
     description:
-      "Return a compact current snapshot summary for one browser session. Prefer browser_session_overview for orientation and browser_actionables for grouped ref discovery.",
+      "Return a compact semantic snapshot for one browser session. This is not a full DOM or full URL inventory; use browser_actionables, browser_find_text, or browser_describe_ref when you need targeted elaboration.",
     inputSchema: zodToJsonSchema(snapshotArgs),
   },
   handle: async (context, params) => {
@@ -964,8 +1091,129 @@ export const getConsoleLogs: Tool = {
       undefined,
       sessionId,
     );
-    const logs = consoleLogs.map((log: unknown) => JSON.stringify(log));
-    return textResult(logs.join("\n"), { logs });
+    const logs = consoleLogs.map(formatConsoleEntry);
+    return textResult(logs.join("\n"), { logs: consoleLogs });
+  },
+};
+
+export const runJs: Tool = {
+  schema: {
+    name: "browser_run_js",
+    description:
+      "Run an async JavaScript snippet inside one browser session. Use this for bulk page work in one round-trip: multiple clicks, multi-field form entry, extracting lists or tables, or custom DOM queries and transforms. The snippet can use `window`, `document`, `args`, `browsermcp` helpers, and `console.log/info/warn/error`; `return` a JSON-serializable value. Console output is streamed during execution when the client supports progress notifications and is always returned in the final result.",
+    inputSchema: zodToJsonSchema(runJsArgs),
+  },
+  handle: async (context, params, extra) => {
+    const {
+      sessionId,
+      code,
+      args,
+      pageVersion,
+      timeoutMs = 30000,
+    } = runJsArgs.parse(params ?? {});
+    const runId = randomUUID();
+    const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
+    const streamedLogs: BrowserConsoleEntry[] = [];
+    let progressCount = 0;
+
+    await emitProgressMessage(
+      extra,
+      progressCount,
+      `browser_run_js started for session ${sessionId}`,
+    );
+
+    const unsubscribe = await context.subscribeToBrowserNotifications(
+      sessionId,
+      (event, payload) => {
+        if (event !== "browser.console.entry") {
+          return;
+        }
+        const consolePayload = payload as BrowserConsoleEntryNotification;
+        if (consolePayload.runId !== runId) {
+          return;
+        }
+        streamedLogs.push(consolePayload.entry);
+        progressCount += 1;
+        void emitProgressMessage(
+          extra,
+          progressCount,
+          `browser_run_js console: ${formatConsoleEntry(consolePayload.entry)}`,
+        );
+      },
+    );
+
+    let runResult: BrowserRunJsResult;
+    try {
+      runResult = await context.sendSocketMessage(
+        "browser_run_js",
+        {
+          code,
+          args,
+          runId,
+          timeoutMs,
+          ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
+        },
+        { timeoutMs: timeoutMs + 1000 },
+        sessionId,
+      );
+    } catch (e) {
+      await unsubscribe();
+      if (isStaleRefError(e)) {
+        return await stalePageVersionResult(context, sessionId, pageVersion);
+      }
+      throw e;
+    }
+
+    await unsubscribe();
+    const stateResult = await actionResult(context, {
+      action: "run_js",
+      beforeRevision,
+      beforePageVersion,
+      input: {
+        runId,
+      },
+      sessionId,
+      successText: runResult.success
+        ? `Executed JavaScript snippet in session ${sessionId}`
+        : `JavaScript snippet failed in session ${sessionId}`,
+    });
+    const resultLogs = runResult.logs.length ? runResult.logs : streamedLogs;
+    const stateText =
+      stateResult.content.find((content) => content.type === "text")?.text ?? "";
+    const lines = [
+      `Run ID: ${runResult.runId ?? runId}`,
+      `Duration: ${runResult.durationMs} ms`,
+      runResult.success
+        ? null
+        : `Error: ${runResult.error?.message ?? "Unknown JavaScript execution failure"}`,
+      runResult.result !== undefined
+        ? `Return Value:\n${renderJson(runResult.result)}`
+        : "Return Value: undefined",
+      resultLogs.length
+        ? `Console Logs:\n${resultLogs.map(formatConsoleEntry).join("\n")}`
+        : "Console Logs: none",
+      stateText,
+    ].filter(Boolean);
+
+    await emitProgressMessage(
+      extra,
+      progressCount + 1,
+      runResult.success
+        ? `browser_run_js completed for session ${sessionId}`
+        : `browser_run_js failed for session ${sessionId}: ${runResult.error?.message ?? "unknown error"}`,
+    );
+
+    return {
+      content: [{ type: "text", text: lines.join("\n\n") }],
+      isError: !runResult.success,
+      structuredContent: {
+        ...(stateResult.structuredContent ?? {}),
+        runId: runResult.runId ?? runId,
+        run: runResult,
+        logs: resultLogs,
+      },
+    };
   },
 };
 

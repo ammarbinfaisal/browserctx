@@ -6,6 +6,43 @@ export type BrowserActionRef = {
   expectedVersion?: number;
 };
 
+export type BrowserConsoleEntry = {
+  level: "log" | "info" | "warn" | "error";
+  args: string[];
+  timestamp: string;
+  source?: "page" | "run_js";
+};
+
+export type BrowserConsoleEntryNotification = {
+  entry: BrowserConsoleEntry;
+  runId?: string;
+};
+
+export type BrowserRunJsPayload = {
+  code: string;
+  args?: unknown;
+  runId?: string;
+  timeoutMs?: number;
+  expectedVersion?: number;
+};
+
+export type BrowserRunJsError = {
+  message: string;
+  name?: string;
+  stack?: string;
+};
+
+export type BrowserRunJsResult = {
+  success: boolean;
+  result?: unknown;
+  error?: BrowserRunJsError;
+  logs: BrowserConsoleEntry[];
+  runId?: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+};
+
 export type BrowserRefDescription = {
   ref: string;
   nodeId: string;
@@ -117,6 +154,9 @@ export type BrowserNotificationMap = {
   "browser.snapshot.updated": {
     payload: BrowserSnapshotUpdate;
   };
+  "browser.console.entry": {
+    payload: BrowserConsoleEntryNotification;
+  };
 };
 
 export type BrowserNotificationType = keyof BrowserNotificationMap;
@@ -205,7 +245,7 @@ export type BrowserRequestMap = {
   };
   browser_get_console_logs: {
     payload: {};
-    result: unknown[];
+    result: BrowserConsoleEntry[];
   };
   browser_screenshot: {
     payload: {};
@@ -216,6 +256,10 @@ export type BrowserRequestMap = {
       ref: string;
     };
     result: BrowserRefDescription;
+  };
+  browser_run_js: {
+    payload: BrowserRunJsPayload;
+    result: BrowserRunJsResult;
   };
 };
 
