@@ -8,22 +8,25 @@ This MCP server is intended to be run as a standard stdio MCP server.
 - explicit `sessionId` routing on every action
 - stable logical tab sessions across reconnects
 - compact orientation reads before full snapshots
+- bounded, queryable discovery reads on large pages
 - structured results for MCP clients that consume structured tool output
 - internal snapshot caching so models do not manage low-level invalidation explicitly
 - explicit `pageVersion` on read and write responses
-- proactive post-action discovery bundles when the page version advances
+- proactive post-action `nextDiscovery` bundles when the page version advances
 
 ## Recommended Tool Usage Pattern
 
 1. Call `browser_sessions`.
 2. Choose one or more `sessionId` values.
 3. Call `browser_session_overview` when the model first needs to understand page shape and likely interaction zones.
-4. Call `browser_actionables` on the sessions where DOM refs are needed. Treat it as the default grouped discovery step.
-5. Use `browser_click`, `browser_type`, `browser_select_option`, and other actions with explicit `sessionId`.
-6. Call `browser_describe_ref` only for the specific refs that need more context.
-7. Call `browser_snapshot` only when the model needs broader page context than the overview or actionable grouping provides.
-8. Prefer the action response first. When `pageVersion` changes, it already includes fresh discovery state for the next step.
-9. Read `browser_state` only when you want lightweight metadata or change summaries without another discovery read.
+4. Call `browser_actionables` on the sessions where DOM refs are needed. Treat it as the default grouped discovery step, and filter it before raising limits.
+5. Call `browser_find_text` when the model knows the text it wants and needs a `recommendedRef` for the next action.
+6. Use `browser_click`, `browser_type`, `browser_select_option`, and other actions with explicit `sessionId`. Treat `ref` as the primary handle; `element` is optional metadata.
+7. Call `browser_describe_ref` only for the specific refs that need more context.
+8. Call `browser_snapshot` only when the model needs broader page context than the overview or filtered actionable grouping provides.
+9. Prefer the action response first. When `pageVersion` changes, it already includes `nextDiscovery` and `nextRefs` for the next step.
+10. Use `browser_navigate` with `waitUntil` when navigation timing matters.
+11. Read `browser_state` only when you want lightweight metadata or change summaries without another discovery read.
 
 ## Discoverable MCP Resources
 
@@ -39,6 +42,7 @@ The server also exposes guide resources that clients can read directly:
 - A compact overview tool is cheaper than starting every task with a full semantic snapshot.
 - `pageVersion` is easier for agents to reason about than exposing raw snapshot bookkeeping.
 - Compact discovery snapshots are cheaper for models than full-page tree dumps.
+- Filterable actionable reads prevent huge pages from blowing out token budgets.
 - Per-ref elaboration keeps detail on demand instead of pushing every attribute into every snapshot.
 - Structured tool results make it easier for clients to read session metadata and page-change summaries without scraping prose.
 - Reconnects do not force the model to rediscover a replacement `sessionId` for the same tab.

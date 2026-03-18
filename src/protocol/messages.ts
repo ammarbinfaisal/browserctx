@@ -1,7 +1,7 @@
 export type SnapshotMode = "full" | "delta";
 
 export type BrowserActionRef = {
-  element: string;
+  element?: string;
   ref: string;
   expectedVersion?: number;
 };

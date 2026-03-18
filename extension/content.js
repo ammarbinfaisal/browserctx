@@ -1173,32 +1173,45 @@
     return actions;
   }
 
+  function describeActionTarget(payload, element) {
+    return (
+      payload.element ||
+      getNodeName(element) ||
+      getRole(element) ||
+      payload.ref ||
+      "target"
+    );
+  }
+
   async function performClick(payload) {
     checkExpectedVersion(payload);
     const element = findElementByRef(payload.ref);
+    const target = describeActionTarget(payload, element);
     element.scrollIntoView({ block: "center", inline: "center" });
     dispatchMouseEvent(element, "mouseover");
     dispatchMouseEvent(element, "mousedown");
     dispatchMouseEvent(element, "mouseup");
     element.click();
-    scheduleSnapshotUpdate("input", "subtree", `Clicked ${payload.element}`);
+    scheduleSnapshotUpdate("input", "subtree", `Clicked ${target}`);
     return { acknowledged: true };
   }
 
   async function performHover(payload) {
     checkExpectedVersion(payload);
     const element = findElementByRef(payload.ref);
+    const target = describeActionTarget(payload, element);
     element.scrollIntoView({ block: "center", inline: "center" });
     dispatchMouseEvent(element, "mouseover");
     dispatchMouseEvent(element, "mouseenter");
     dispatchMouseEvent(element, "mousemove");
-    schedulePageUpdate("mutation", "subtree", `Hovered ${payload.element}`);
+    schedulePageUpdate("mutation", "subtree", `Hovered ${target}`);
     return { acknowledged: true };
   }
 
   async function performType(payload) {
     checkExpectedVersion(payload);
     const element = findElementByRef(payload.ref);
+    const target = describeActionTarget(payload, element);
     element.scrollIntoView({ block: "center", inline: "center" });
     element.focus();
 
@@ -1222,13 +1235,14 @@
       }
     }
 
-    scheduleSnapshotUpdate("input", "subtree", `Typed into ${payload.element}`);
+    scheduleSnapshotUpdate("input", "subtree", `Typed into ${target}`);
     return { acknowledged: true };
   }
 
   async function performSelectOption(payload) {
     checkExpectedVersion(payload);
     const element = findElementByRef(payload.ref);
+    const target = describeActionTarget(payload, element);
     if (!(element instanceof HTMLSelectElement)) {
       throw new Error("Target ref is not a select element");
     }
@@ -1240,7 +1254,7 @@
 
     element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
-    scheduleSnapshotUpdate("input", "subtree", `Selected option in ${payload.element}`);
+    scheduleSnapshotUpdate("input", "subtree", `Selected option in ${target}`);
     return { acknowledged: true };
   }
 

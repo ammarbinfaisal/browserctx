@@ -37,19 +37,22 @@ Use this order when driving a page through the MCP tools:
 
 1. Call \`browser_sessions\` and choose a \`sessionId\`.
 2. Call \`browser_session_overview\` first when you need to orient on a page quickly.
-3. Call \`browser_actionables\` when you need concrete refs grouped by semantic area.
-4. Call \`browser_describe_ref\` only for the specific ref that needs deeper context.
-5. Call \`browser_snapshot\` only when grouped refs are not enough and you need a broader semantic tree.
-6. Use action tools with the same explicit \`sessionId\`.
-7. Prefer the action response first; when the page version advances, it already includes fresh discovery state for the next step.
-8. Read \`browser_state\` only when you need metadata or change summaries without another discovery read.
+3. Call \`browser_actionables\` with filters when you need concrete refs. It is bounded by default, so tighten the query before raising limits.
+4. Call \`browser_find_text\` when the next step is “find the best clickable thing matching this text”.
+5. Call \`browser_describe_ref\` only for the specific ref that needs deeper context.
+6. Call \`browser_snapshot\` only when grouped refs are not enough and you need a broader semantic tree.
+7. Use action tools with the same explicit \`sessionId\`. Treat \`ref\` as the primary handle; \`element\` is optional metadata.
+8. Prefer the action response first; when the page version advances, it already includes \`nextDiscovery\` and \`nextRefs\`.
+9. Read \`browser_state\` only when you need metadata or change summaries without another discovery read.
 
 Heuristics:
 
 - Prefer \`browser_session_overview\` over \`browser_snapshot\` for initial page orientation.
 - Prefer \`browser_actionables\` over \`browser_snapshot\` when you already know you need DOM refs.
+- Prefer \`browser_find_text\` over a broad snapshot when you can name the thing you want.
 - Treat \`sessionId\` as stable for a tab across reconnects.
 - Treat \`pageVersion\` as the current interaction version for that page.
+- Use \`browser_navigate\` with \`waitUntil\` when navigation timing matters.
 - Use multiple sessions in parallel, but keep writes on the same session sequential.`,
 });
 
@@ -64,7 +67,7 @@ Browser MCP treats refs as snapshot-derived handles. If the page changes, a ref 
 
 When an action returns \`STALE_REF\`:
 
-1. Read the attached discovery state in the same error response.
+1. Read the attached \`nextDiscovery\` bundle in the same error response.
 2. Pick the refreshed ref from the updated grouped inventory.
 3. Retry the action with the new ref.
 
@@ -72,7 +75,7 @@ Guidance:
 
 - Pass \`pageVersion\` when you want strict stale-ref detection.
 - Omit \`pageVersion\` when you prefer best-effort execution against the latest page state.
-- Read the action response before requesting a fresh snapshot; when the page version advances, Browser MCP already attaches the next discovery bundle.
+- Read the action response before requesting a fresh snapshot; when the page version advances, Browser MCP already attaches the next-step discovery bundle.
 - Use \`browser_state\` when you only need current page metadata and the latest change summary.`,
 });
 

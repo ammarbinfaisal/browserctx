@@ -77,6 +77,46 @@ export type PageDiscoveryState = {
   stats: DiscoveryStats;
 };
 
+export type DiscoveryFilters = {
+  query?: string;
+  exact?: boolean;
+  roles?: string[];
+  inViewportOnly?: boolean;
+  groupQuery?: string;
+  limit?: number;
+  maxRefsPerGroup?: number;
+  preferVisible?: boolean;
+  preferRoles?: string[];
+  preferHrefContains?: string;
+};
+
+export type ResolvedDiscoveryFilters = {
+  query?: string;
+  exact: boolean;
+  roles: string[];
+  inViewportOnly: boolean;
+  groupQuery?: string;
+  limit: number;
+  maxRefsPerGroup: number;
+  preferVisible: boolean;
+  preferRoles: string[];
+  preferHrefContains?: string;
+};
+
+export type DiscoverySelection = {
+  pageVersion: number;
+  page: BrowserSnapshotResponse["page"];
+  filters: ResolvedDiscoveryFilters;
+  totalMatches: number;
+  returnedMatches: number;
+  truncated: boolean;
+  groups: ActionableGroup[];
+  actionables: ActionablePreview[];
+  recommendedRef?: string;
+  recommendedActionables: ActionablePreview[];
+  stats: DiscoveryStats;
+};
+
 function flattenNodes(nodes: BrowserSnapshotNode[]): BrowserSnapshotNode[] {
   const flattened: BrowserSnapshotNode[] = [];
   const visit = (node: BrowserSnapshotNode) => {
@@ -371,6 +411,307 @@ export function buildDiscoveryState(
   };
 }
 
+function normalizeQuery(value?: string): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : undefined;
+}
+
+function normalizeRoleList(values?: string[]): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean))];
+}
+
+function matchesText(value: string | undefined, query: string, exact: boolean): boolean {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return exact ? normalized === query : normalized.includes(query);
+}
+
+function actionableSearchParts(actionable: ActionablePreview): string[] {
+  return [
+    actionable.name,
+    actionable.value,
+    actionable.href,
+    actionable.placeholder,
+    actionable.landmark,
+    actionable.heading,
+    actionable.form,
+    actionable.section,
+  ].filter((value): value is string => Boolean(value));
+}
+
+function groupSearchParts(group: ActionableGroup): string[] {
+  return [group.name, group.landmark, group.heading, group.form, group.section].filter(
+    (value): value is string => Boolean(value),
+  );
+}
+
+function matchesQuery(parts: string[], query: string, exact: boolean): boolean {
+  return parts.some((part) => matchesText(part, query, exact));
+}
+
+function resolveDiscoveryFilters(
+  filters: DiscoveryFilters = {},
+  defaults: {
+    limit?: number;
+    maxRefsPerGroup?: number;
+    preferVisible?: boolean;
+  } = {},
+): ResolvedDiscoveryFilters {
+  const limit = Math.max(1, Math.min(filters.limit ?? defaults.limit ?? 25, 200));
+  const maxRefsPerGroup = Math.max(
+    1,
+    Math.min(filters.maxRefsPerGroup ?? defaults.maxRefsPerGroup ?? 5, 50),
+  );
+
+  return {
+    query: normalizeQuery(filters.query),
+    exact: filters.exact === true,
+    roles: normalizeRoleList(filters.roles),
+    inViewportOnly: filters.inViewportOnly === true,
+    groupQuery: normalizeQuery(filters.groupQuery),
+    limit,
+    maxRefsPerGroup,
+    preferVisible: filters.preferVisible ?? defaults.preferVisible ?? true,
+    preferRoles: normalizeRoleList(filters.preferRoles),
+    preferHrefContains: normalizeQuery(filters.preferHrefContains),
+  };
+}
+
+function actionableMatchesFilters(
+  actionable: ActionablePreview,
+  group: ActionableGroup,
+  filters: ResolvedDiscoveryFilters,
+): boolean {
+  if (filters.roles.length) {
+    const role = actionable.role?.toLowerCase() ?? "";
+    if (!filters.roles.includes(role)) {
+      return false;
+    }
+  }
+
+  if (filters.inViewportOnly && !actionable.inViewport) {
+    return false;
+  }
+
+  if (filters.groupQuery && !matchesQuery(groupSearchParts(group), filters.groupQuery, false)) {
+    return false;
+  }
+
+  if (filters.query && !matchesQuery(actionableSearchParts(actionable), filters.query, filters.exact)) {
+    return false;
+  }
+
+  return true;
+}
+
+function scoreActionable(
+  actionable: ActionablePreview,
+  filters: ResolvedDiscoveryFilters,
+): number {
+  let score = 0;
+
+  if (actionable.inViewport) {
+    score += 100;
+  }
+  if (filters.preferVisible && actionable.inViewport) {
+    score += 40;
+  }
+
+  const role = actionable.role?.toLowerCase() ?? "";
+  if (filters.preferRoles.length && filters.preferRoles.includes(role)) {
+    score += 60;
+  }
+  if (role === "button") {
+    score += 25;
+  } else if (role === "link") {
+    score += 20;
+  } else if (role === "textbox" || role === "combobox") {
+    score += 18;
+  }
+
+  if (filters.preferHrefContains && matchesText(actionable.href, filters.preferHrefContains, false)) {
+    score += 45;
+  }
+
+  if (filters.query) {
+    if (matchesText(actionable.name, filters.query, true)) {
+      score += 160;
+    } else if (matchesText(actionable.name, filters.query, false)) {
+      score += 110;
+    }
+
+    if (matchesText(actionable.value, filters.query, true)) {
+      score += 120;
+    } else if (matchesText(actionable.value, filters.query, false)) {
+      score += 70;
+    }
+
+    if (matchesText(actionable.href, filters.query, true)) {
+      score += 100;
+    } else if (matchesText(actionable.href, filters.query, false)) {
+      score += 65;
+    }
+
+    if (
+      matchesText(actionable.heading, filters.query, false) ||
+      matchesText(actionable.form, filters.query, false) ||
+      matchesText(actionable.section, filters.query, false)
+    ) {
+      score += 35;
+    }
+  }
+
+  if (!actionable.disabled) {
+    score += 8;
+  }
+
+  return score;
+}
+
+export function selectActionables(
+  discovery: PageDiscoveryState,
+  filters: DiscoveryFilters = {},
+  defaults: {
+    limit?: number;
+    maxRefsPerGroup?: number;
+    preferVisible?: boolean;
+  } = {},
+): DiscoverySelection {
+  const resolved = resolveDiscoveryFilters(filters, defaults);
+  const matchedCountByGroup = new Map<string, number>();
+  const entries: Array<{
+    actionable: ActionablePreview;
+    group: ActionableGroup;
+    score: number;
+    groupIndex: number;
+  }> = [];
+
+  discovery.groups.forEach((group, groupIndex) => {
+    group.actionables.forEach((actionable) => {
+      if (!actionableMatchesFilters(actionable, group, resolved)) {
+        return;
+      }
+      matchedCountByGroup.set(group.nodeId, (matchedCountByGroup.get(group.nodeId) ?? 0) + 1);
+      entries.push({
+        actionable,
+        group,
+        score: scoreActionable(actionable, resolved),
+        groupIndex,
+      });
+    });
+  });
+
+  entries.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    return left.groupIndex - right.groupIndex;
+  });
+
+  const selected: typeof entries = [];
+  const selectedPerGroup = new Map<string, number>();
+  for (const entry of entries) {
+    if (selected.length >= resolved.limit) {
+      break;
+    }
+    const groupCount = selectedPerGroup.get(entry.group.nodeId) ?? 0;
+    if (groupCount >= resolved.maxRefsPerGroup) {
+      continue;
+    }
+    selected.push(entry);
+    selectedPerGroup.set(entry.group.nodeId, groupCount + 1);
+  }
+
+  const selectedGroups = new Map<string, ActionableGroup>();
+  for (const entry of selected) {
+    const existing = selectedGroups.get(entry.group.nodeId);
+    if (existing) {
+      existing.actionables.push(entry.actionable);
+      continue;
+    }
+    selectedGroups.set(entry.group.nodeId, {
+      ...entry.group,
+      itemCount: matchedCountByGroup.get(entry.group.nodeId) ?? entry.group.itemCount,
+      actionables: [entry.actionable],
+    });
+  }
+
+  const groups = discovery.groups
+    .map((group) => selectedGroups.get(group.nodeId))
+    .filter((group): group is ActionableGroup => Boolean(group));
+  const actionables = selected.map((entry) => entry.actionable);
+
+  return {
+    pageVersion: discovery.pageVersion,
+    page: discovery.page,
+    filters: resolved,
+    totalMatches: entries.length,
+    returnedMatches: actionables.length,
+    truncated: actionables.length < entries.length,
+    groups,
+    actionables,
+    recommendedRef: actionables[0]?.ref,
+    recommendedActionables: actionables.slice(0, 5),
+    stats: discovery.stats,
+  };
+}
+
+function formatSelectionFilters(filters: ResolvedDiscoveryFilters): string | null {
+  const parts = [
+    filters.query ? `query="${filters.query}"` : null,
+    filters.exact ? "exact=true" : null,
+    filters.roles.length ? `roles=${filters.roles.join(",")}` : null,
+    filters.inViewportOnly ? "inViewportOnly=true" : null,
+    filters.groupQuery ? `group="${filters.groupQuery}"` : null,
+    filters.preferRoles.length ? `preferRoles=${filters.preferRoles.join(",")}` : null,
+    filters.preferHrefContains ? `preferHrefContains="${filters.preferHrefContains}"` : null,
+    `limit=${filters.limit}`,
+    `maxRefsPerGroup=${filters.maxRefsPerGroup}`,
+  ].filter((value): value is string => Boolean(value));
+
+  return parts.length ? parts.join(" | ") : null;
+}
+
+export function renderDiscoverySelection(
+  selection: DiscoverySelection,
+  options: { headingLabel?: string } = {},
+): string[] {
+  const headingLabel = options.headingLabel ?? "Matching Actionable Areas";
+  const lines = [
+    `- Page Version: ${selection.pageVersion}`,
+    `- Matched Refs: ${selection.returnedMatches} of ${selection.totalMatches}`,
+  ];
+
+  if (selection.recommendedActionables[0]) {
+    lines.push(
+      `- Recommended Ref: ${formatActionableLine(selection.recommendedActionables[0]).slice(2)}`,
+    );
+  }
+
+  const filterLine = formatSelectionFilters(selection.filters);
+  if (filterLine) {
+    lines.push(`- Applied Filters: ${filterLine}`);
+  }
+  if (selection.truncated) {
+    lines.push("- Result Set: truncated; tighten the query or increase limit for more refs");
+  }
+
+  if (selection.groups.length) {
+    lines.push(`- ${headingLabel}:`);
+    lines.push(
+      ...formatGroupedActionables(selection.groups, {
+        maxPerGroup: selection.filters.maxRefsPerGroup,
+      }),
+    );
+  } else {
+    lines.push("- No actionable refs matched the current filters.");
+  }
+
+  return lines;
+}
+
 type DiscoveryRenderOptions = {
   headingLabel?: string;
   maxPerGroup?: number;
@@ -500,19 +841,22 @@ ${renderDiscoveryState(discovery, {
 export async function captureActionables(
   context: Context,
   sessionId: string,
+  filters: DiscoveryFilters = {},
 ): Promise<ToolResult> {
   const discovery = await getDiscoveryState(context, sessionId, {
     preferCache: true,
+  });
+  const selection = selectActionables(discovery, filters, {
+    limit: 25,
+    maxRefsPerGroup: 5,
   });
 
   const lines = [
     `- Session ID: ${sessionId}`,
     `- Page URL: ${discovery.page.url}`,
     `- Page Title: ${discovery.page.title}`,
-    ...renderDiscoveryState(discovery, {
-      headingLabel: "Actionable Groups",
-      maxPerGroup: Number.POSITIVE_INFINITY,
-      maxContextAnchors: 0,
+    ...renderDiscoverySelection(selection, {
+      headingLabel: "Actionable Areas",
     }),
   ];
 
@@ -520,11 +864,15 @@ export async function captureActionables(
     content: [{ type: "text", text: lines.join("\n") }],
     structuredContent: {
       sessionId,
-      pageVersion: discovery.pageVersion,
-      page: discovery.page,
-      actionables: discovery.actionables,
-      groups: discovery.groups,
-      discovery,
+      pageVersion: selection.pageVersion,
+      page: selection.page,
+      filters: selection.filters,
+      totalMatches: selection.totalMatches,
+      returnedMatches: selection.returnedMatches,
+      truncated: selection.truncated,
+      recommendedRef: selection.recommendedRef,
+      matchedRefs: selection.actionables,
+      groups: selection.groups,
     },
   };
 }
@@ -536,12 +884,38 @@ export async function captureSessionOverview(
   const discovery = await getDiscoveryState(context, sessionId, {
     preferCache: true,
   });
+  const selection = selectActionables(discovery, {}, {
+    limit: 12,
+    maxRefsPerGroup: 3,
+  });
+  const selectionLines = renderDiscoverySelection(selection, {
+    headingLabel: "Recommended Actionable Areas",
+  }).filter(
+    (line) =>
+      !line.startsWith("- Page Version:") &&
+      !line.startsWith("- Applied Filters:"),
+  );
 
   const lines = [
     `- Session ID: ${sessionId}`,
     `- Page URL: ${discovery.page.url}`,
     `- Page Title: ${discovery.page.title}`,
-    ...renderDiscoveryState(discovery),
+    `- Page Version: ${discovery.pageVersion}`,
+    `- Interactive Areas: ${discovery.stats.actionableGroups} (${discovery.stats.visibleGroups} in viewport)`,
+    `- Actionable Refs: ${discovery.stats.actionableCount} (${discovery.stats.inViewportCount} in viewport)`,
+    `- Role Counts: ${discovery.stats.roleCounts || "none"}`,
+    ...selectionLines,
+    ...(discovery.contextAnchors.length
+      ? [
+          "- Context Anchors:",
+          ...discovery.contextAnchors
+            .slice(0, 6)
+            .map(formatContextNodeLine),
+          ...(discovery.contextAnchors.length > 6
+            ? [`- +${discovery.contextAnchors.length - 6} more context anchors`]
+            : []),
+        ]
+      : []),
   ];
 
   return {
@@ -550,8 +924,13 @@ export async function captureSessionOverview(
       sessionId,
       pageVersion: discovery.pageVersion,
       page: discovery.page,
-      overview: discovery,
-      discovery,
+      overview: {
+        stats: discovery.stats,
+        recommendedRef: selection.recommendedRef,
+        recommendedRefs: selection.recommendedActionables,
+        groups: selection.groups,
+        contextAnchors: discovery.contextAnchors.slice(0, 6),
+      },
     },
   };
 }

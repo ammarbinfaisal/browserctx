@@ -7,10 +7,9 @@ import {
   captureActionables,
   captureAriaSnapshot,
   captureSessionOverview,
-  findTextInSnapshot,
   getDiscoveryState,
-  getSnapshotResponse,
-  renderDiscoveryState,
+  renderDiscoverySelection,
+  selectActionables,
 } from "@/utils/aria-snapshot";
 
 import type { Context } from "@/context";
@@ -27,9 +26,48 @@ const pageVersionSchema = z
   .nonnegative()
   .optional()
   .describe(
-    "Page version when this ref was captured (from browser_actionables, browser_session_overview, or browser_snapshot). " +
-      "If provided and the page has changed since, the response includes fresh discovery state for retrying with current refs.",
+    "Page version when this ref was captured from a prior Browser MCP discovery result. " +
+      "If provided and the page has changed since, the response includes fresh next-step refs for retrying.",
   );
+
+const commonDiscoveryFilters = {
+  query: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional text filter applied across names, values, hrefs, placeholders, and nearby context."),
+  exact: z
+    .boolean()
+    .optional()
+    .describe("When true, query matching uses exact case-insensitive field equality instead of substring matching."),
+  roles: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional role filter such as link, button, textbox, or combobox."),
+  inViewportOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, only refs currently in the viewport are returned."),
+  groupQuery: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional filter applied to group labels and contextual headings."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(200)
+    .optional()
+    .describe("Maximum number of refs to return."),
+  maxRefsPerGroup: z
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .optional()
+    .describe("Maximum number of refs to return from any one semantic group."),
+};
 
 const browserSessionsArgs = z.object({});
 
@@ -43,6 +81,7 @@ const snapshotArgs = z.object({
 
 const actionablesArgs = z.object({
   sessionId: sessionIdSchema,
+  ...commonDiscoveryFilters,
 });
 
 const overviewArgs = z.object({
@@ -52,14 +91,26 @@ const overviewArgs = z.object({
 const navigateArgs = z.object({
   sessionId: sessionIdSchema,
   url: z.string().min(1).describe("URL to navigate to."),
+  waitUntil: z
+    .enum(["none", "url-change", "page-change", "settle"])
+    .optional()
+    .describe("How long Browser MCP should wait before returning. Default is url-change."),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(30000)
+    .optional()
+    .describe("Maximum time to wait for navigation observation."),
 });
 
 const clickArgs = z.object({
   sessionId: sessionIdSchema,
   element: z
     .string()
+    .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact element reference from a prior snapshot."),
+  ref: z.string().describe("Exact element reference from a prior Browser MCP discovery result."),
   pageVersion: pageVersionSchema,
 });
 
@@ -67,8 +118,9 @@ const hoverArgs = z.object({
   sessionId: sessionIdSchema,
   element: z
     .string()
+    .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact element reference from a prior snapshot."),
+  ref: z.string().describe("Exact element reference from a prior Browser MCP discovery result."),
   pageVersion: pageVersionSchema,
 });
 
@@ -76,8 +128,9 @@ const typeArgs = z.object({
   sessionId: sessionIdSchema,
   element: z
     .string()
+    .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact editable element reference from a prior snapshot."),
+  ref: z.string().describe("Exact editable element reference from a prior Browser MCP discovery result."),
   text: z.string().describe("Text to type."),
   submit: z.boolean().describe("Whether to press Enter after typing."),
   pageVersion: pageVersionSchema,
@@ -87,8 +140,9 @@ const selectOptionArgs = z.object({
   sessionId: sessionIdSchema,
   element: z
     .string()
+    .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact select element reference from a prior snapshot."),
+  ref: z.string().describe("Exact select element reference from a prior Browser MCP discovery result."),
   values: z.array(z.string()).min(1).describe("Option values to select."),
   pageVersion: pageVersionSchema,
 });
@@ -121,7 +175,7 @@ const screenshotArgs = z.object({
 
 const describeRefArgs = z.object({
   sessionId: sessionIdSchema,
-  ref: z.string().describe("Element ref from browser_snapshot."),
+  ref: z.string().describe("Element ref from any prior Browser MCP discovery result."),
 });
 
 const findTextArgs = z.object({
@@ -129,7 +183,46 @@ const findTextArgs = z.object({
   query: z
     .string()
     .min(1)
-    .describe("Text to search for in the page (case-insensitive). Matches against element names, values, and href attributes."),
+    .describe("Text to search for when choosing actionable refs on the current page."),
+  exact: z
+    .boolean()
+    .optional()
+    .describe("When true, query matching uses exact case-insensitive equality instead of substring matching."),
+  roles: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional hard role filter such as link, button, textbox, or combobox."),
+  inViewportOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, only actionable refs currently in the viewport are considered."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .describe("Maximum number of actionable matches to return."),
+  maxRefsPerGroup: z
+    .number()
+    .int()
+    .positive()
+    .max(25)
+    .optional()
+    .describe("Maximum number of matches to return from any one semantic group."),
+  preferVisible: z
+    .boolean()
+    .optional()
+    .describe("When true, visible actionable refs are ranked higher."),
+  preferRoles: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional soft ranking preference for roles such as link or button."),
+  preferHrefContains: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional soft ranking preference for actionable hrefs containing this substring."),
 });
 
 function textResult(
@@ -146,15 +239,34 @@ function isStaleRefError(e: unknown): boolean {
   return e instanceof Error && e.message.startsWith(mcpConfig.errors.staleRef);
 }
 
+function formatActionTarget(ref: string, element?: string): string {
+  return element ? `"${element}"` : `ref "${ref}"`;
+}
+
+async function getNextDiscoverySelection(
+  context: Context,
+  sessionId: string,
+) {
+  const discovery = await getDiscoveryState(context, sessionId, {
+    preferCache: true,
+  });
+  return selectActionables(
+    discovery,
+    {},
+    {
+      limit: 12,
+      maxRefsPerGroup: 4,
+    },
+  );
+}
+
 async function staleRefResult(
   context: Context,
   sessionId: string,
   ref: string,
   pageVersion: number | undefined,
 ): Promise<ToolResult> {
-  const discovery = await getDiscoveryState(context, sessionId, {
-    preferCache: true,
-  });
+  const nextDiscovery = await getNextDiscoverySelection(context, sessionId);
   return {
     content: [
       {
@@ -164,10 +276,9 @@ async function staleRefResult(
           pageVersion != null
             ? `Page has changed since page version ${pageVersion}.`
             : "Page has changed since this ref was captured.",
-          `Fresh discovery state for page version ${discovery.pageVersion} is attached below.`,
-          ...renderDiscoveryState(discovery, {
-            headingLabel: "Retry With These Actionable Areas",
-            maxPerGroup: 4,
+          `Fresh next-step refs for page version ${nextDiscovery.pageVersion} are attached below.`,
+          ...renderDiscoverySelection(nextDiscovery, {
+            headingLabel: "Retry With These Refs",
           }),
         ].join("\n"),
       },
@@ -177,7 +288,8 @@ async function staleRefResult(
       error: mcpConfig.errors.staleRef,
       ref,
       pageVersion,
-      discovery,
+      nextDiscovery,
+      nextRefs: nextDiscovery.recommendedActionables,
     },
   };
 }
@@ -250,25 +362,30 @@ async function actionResult(
   );
   const sessionState = await context.getSessionState(sessionId);
   const lines = [successText, ...formatChangeLines(sessionState)];
-  let discovery: Awaited<ReturnType<typeof getDiscoveryState>> | null = null;
+  let nextDiscovery: Awaited<ReturnType<typeof getNextDiscoverySelection>> | null = null;
   const pageVersionChanged = sessionState.pageVersion !== beforePageVersion;
 
-  if (pageVersionChanged && sessionState.pageVersion != null) {
-    discovery = await getDiscoveryState(context, sessionId, {
-      preferCache: true,
-    });
-    lines.push(
-      `Fresh discovery state attached for page version ${discovery.pageVersion}.`,
-    );
-    lines.push(
-      ...renderDiscoveryState(discovery, {
-        headingLabel: "Next Actionable Areas",
-        maxPerGroup: 4,
-      }),
-    );
+  lines.push(`Current URL: ${sessionState.page?.url ?? "unknown"}`);
+  lines.push(`Current Title: ${sessionState.page?.title ?? "unknown"}`);
+  lines.push(`Transport Connected: ${sessionState.status === "ready" ? "yes" : "no"}`);
+
+  if (pageVersionChanged && sessionState.pageVersion != null && sessionState.status === "ready") {
+    try {
+      nextDiscovery = await getNextDiscoverySelection(context, sessionId);
+      lines.push(
+        `Fresh next-step refs attached for page version ${nextDiscovery.pageVersion}.`,
+      );
+      lines.push(
+        ...renderDiscoverySelection(nextDiscovery, {
+          headingLabel: "Next Actionable Areas",
+        }),
+      );
+    } catch {
+      lines.push("Page version changed, but Browser MCP could not capture the refreshed next-step refs.");
+    }
   } else {
     lines.push(`Page Version: ${sessionState.pageVersion ?? "unknown"}`);
-    lines.push("Refs remain on the current page version; no refresh bundle was needed.");
+    lines.push("No refreshed next-step refs were needed.");
   }
 
   if (!changed) {
@@ -282,9 +399,192 @@ async function actionResult(
       session: sessionState,
       pageVersion: sessionState.pageVersion,
       pageVersionChanged,
-      ...(discovery ? { discovery } : {}),
+      currentUrl: sessionState.page?.url ?? null,
+      currentTitle: sessionState.page?.title ?? null,
+      transportConnected: sessionState.status === "ready",
+      ...(nextDiscovery
+        ? {
+            nextDiscovery,
+            nextRefs: nextDiscovery.recommendedActionables,
+          }
+        : {}),
     },
   );
+}
+
+async function waitForNavigationState(
+  context: Context,
+  sessionId: string,
+  options: {
+    beforeRevision: number;
+    beforeUrl: string | null;
+    beforePageVersion: number | null;
+    waitUntil: "none" | "url-change" | "page-change" | "settle";
+    timeoutMs: number;
+  },
+): Promise<{
+  sessionState: BrowserSessionState;
+  urlChanged: boolean;
+  pageVersionChanged: boolean;
+  stateChanged: boolean;
+  navigationObserved: boolean;
+  timedOut: boolean;
+}> {
+  const { beforeRevision, beforeUrl, beforePageVersion, waitUntil, timeoutMs } = options;
+  let currentRevision = beforeRevision;
+  let sessionState = await context.getSessionState(sessionId);
+  let timedOut = false;
+
+  const readOutcome = () => {
+    const urlChanged = (sessionState.page?.url ?? null) !== beforeUrl;
+    const pageVersionChanged = sessionState.pageVersion !== beforePageVersion;
+    const stateChanged = urlChanged || pageVersionChanged;
+    return {
+      sessionState,
+      urlChanged,
+      pageVersionChanged,
+      stateChanged,
+      navigationObserved: stateChanged,
+      timedOut,
+    };
+  };
+
+  if (waitUntil === "none") {
+    return readOutcome();
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    sessionState = await context.getSessionState(sessionId);
+    const outcome = readOutcome();
+
+    if (waitUntil === "url-change" && outcome.urlChanged) {
+      return outcome;
+    }
+    if (waitUntil === "page-change" && outcome.stateChanged) {
+      return outcome;
+    }
+    if (waitUntil === "settle" && outcome.stateChanged) {
+      const remaining = Math.max(1, deadline - Date.now());
+      const settled = await context.waitForStateChangeSince(
+        sessionId,
+        await context.getStateRevision(sessionId),
+        Math.min(400, remaining),
+      );
+      sessionState = await context.getSessionState(sessionId);
+      if (!settled) {
+        return readOutcome();
+      }
+      currentRevision = await context.getStateRevision(sessionId);
+      continue;
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      break;
+    }
+    const changed = await context.waitForStateChangeSince(
+      sessionId,
+      currentRevision,
+      Math.min(300, remaining),
+    );
+    if (changed) {
+      currentRevision = await context.getStateRevision(sessionId);
+    }
+  }
+
+  timedOut = true;
+  sessionState = await context.getSessionState(sessionId);
+  return readOutcome();
+}
+
+async function navigateResult(
+  context: Context,
+  options: {
+    sessionId: string;
+    url: string;
+    beforeRevision: number;
+    beforePageVersion: number | null;
+    beforeUrl: string | null;
+    waitUntil: "none" | "url-change" | "page-change" | "settle";
+    timeoutMs: number;
+  },
+): Promise<ToolResult> {
+  const {
+    sessionId,
+    url,
+    beforeRevision,
+    beforePageVersion,
+    beforeUrl,
+    waitUntil,
+    timeoutMs,
+  } = options;
+  const outcome = await waitForNavigationState(context, sessionId, {
+    beforeRevision,
+    beforeUrl,
+    beforePageVersion,
+    waitUntil,
+    timeoutMs,
+  });
+
+  let nextDiscovery: Awaited<ReturnType<typeof getNextDiscoverySelection>> | null = null;
+  if (
+    outcome.pageVersionChanged &&
+    outcome.sessionState.pageVersion != null &&
+    outcome.sessionState.status === "ready"
+  ) {
+    try {
+      nextDiscovery = await getNextDiscoverySelection(context, sessionId);
+    } catch {
+      nextDiscovery = null;
+    }
+  }
+
+  const lines = [
+    `Navigation requested to ${url}`,
+    `Wait Strategy: ${waitUntil}`,
+    `Navigation Observed: ${outcome.navigationObserved ? "yes" : "no"}`,
+    `Current URL: ${outcome.sessionState.page?.url ?? "unknown"}`,
+    `Current Title: ${outcome.sessionState.page?.title ?? "unknown"}`,
+    `Transport Connected: ${outcome.sessionState.status === "ready" ? "yes" : "no"}`,
+    ...formatChangeLines(outcome.sessionState),
+  ];
+
+  if (nextDiscovery) {
+    lines.push(`Fresh next-step refs attached for page version ${nextDiscovery.pageVersion}.`);
+    lines.push(
+      ...renderDiscoverySelection(nextDiscovery, {
+        headingLabel: "Next Actionable Areas",
+      }),
+    );
+  }
+
+  if (outcome.timedOut) {
+    lines.push("Navigation wait timed out before the requested condition was observed.");
+  }
+
+  return textResult(lines.join("\n"), {
+    action: "navigate",
+    input: {
+      url,
+      waitUntil,
+      timeoutMs,
+    },
+    session: outcome.sessionState,
+    navigationObserved: outcome.navigationObserved,
+    urlChanged: outcome.urlChanged,
+    pageVersionChanged: outcome.pageVersionChanged,
+    currentUrl: outcome.sessionState.page?.url ?? null,
+    currentTitle: outcome.sessionState.page?.title ?? null,
+    transportConnected: outcome.sessionState.status === "ready",
+    timedOut: outcome.timedOut,
+    ...(nextDiscovery
+      ? {
+          nextDiscovery,
+          nextRefs: nextDiscovery.recommendedActionables,
+        }
+      : {}),
+  });
 }
 
 export const listSessions: Tool = {
@@ -351,12 +651,12 @@ export const actionables: Tool = {
   schema: {
     name: "browser_actionables",
     description:
-      "Return actionable refs from the current snapshot for one browser session, grouped by semantic page area. Use this as the default discovery step before browser_describe_ref or an action tool.",
+      "Return the best actionable refs for one browser session, grouped and bounded by semantic area. Use filters to target the exact next clicks or form controls you need.",
     inputSchema: zodToJsonSchema(actionablesArgs),
   },
   handle: async (context, params) => {
-    const { sessionId } = actionablesArgs.parse(params ?? {});
-    return captureActionables(context, sessionId);
+    const { sessionId, ...filters } = actionablesArgs.parse(params ?? {});
+    return captureActionables(context, sessionId, filters);
   },
 };
 
@@ -377,22 +677,28 @@ export const navigate: Tool = {
   schema: {
     name: "browser_navigate",
     description:
-      "Navigate one browser session to a URL. The MCP tracks cache invalidation and version changes automatically.",
+      "Navigate one browser session to a URL and wait until a requested navigation condition is observed.",
     inputSchema: zodToJsonSchema(navigateArgs),
   },
   handle: async (context, params) => {
-    const { sessionId, url } = navigateArgs.parse(params ?? {});
+    const {
+      sessionId,
+      url,
+      waitUntil = "url-change",
+      timeoutMs = 5000,
+    } = navigateArgs.parse(params ?? {});
+    const beforeState = await context.getSessionState(sessionId);
     const beforeRevision = await context.getStateRevision(sessionId);
-    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
+    const beforePageVersion = beforeState.pageVersion;
     await context.sendSocketMessage("browser_navigate", { url }, undefined, sessionId);
-    return actionResult(context, {
-      action: "navigate",
+    return navigateResult(context, {
+      sessionId,
+      url,
       beforeRevision,
       beforePageVersion,
-      input: { url },
-      sessionId,
-      successText: `Navigated session ${sessionId} to ${url}`,
-      waitTimeoutMs: 5000,
+      beforeUrl: beforeState.page?.url ?? null,
+      waitUntil,
+      timeoutMs,
     });
   },
 };
@@ -401,7 +707,7 @@ export const click: Tool = {
   schema: {
     name: "browser_click",
     description:
-      "Click an element in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when the page version advances.",
+      "Click an element in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(clickArgs),
   },
   handle: async (context, params) => {
@@ -430,7 +736,7 @@ export const click: Tool = {
       beforePageVersion,
       input: clickParams,
       sessionId,
-      successText: `Clicked "${clickParams.element}" in session ${sessionId}`,
+      successText: `Clicked ${formatActionTarget(clickParams.ref, clickParams.element)} in session ${sessionId}`,
     });
   },
 };
@@ -439,7 +745,7 @@ export const hover: Tool = {
   schema: {
     name: "browser_hover",
     description:
-      "Hover an element in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when needed.",
+      "Hover an element in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(hoverArgs),
   },
   handle: async (context, params) => {
@@ -468,7 +774,7 @@ export const hover: Tool = {
       beforePageVersion,
       input: hoverParams,
       sessionId,
-      successText: `Hovered over "${hoverParams.element}" in session ${sessionId}`,
+      successText: `Hovered over ${formatActionTarget(hoverParams.ref, hoverParams.element)} in session ${sessionId}`,
     });
   },
 };
@@ -477,7 +783,7 @@ export const type: Tool = {
   schema: {
     name: "browser_type",
     description:
-      "Type into an element in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when the page version advances.",
+      "Type into an element in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(typeArgs),
   },
   handle: async (context, params) => {
@@ -506,7 +812,7 @@ export const type: Tool = {
       beforePageVersion,
       input: typeParams,
       sessionId,
-      successText: `Typed "${typeParams.text}" into "${typeParams.element}" in session ${sessionId}`,
+      successText: `Typed "${typeParams.text}" into ${formatActionTarget(typeParams.ref, typeParams.element)} in session ${sessionId}`,
     });
   },
 };
@@ -515,7 +821,7 @@ export const selectOption: Tool = {
   schema: {
     name: "browser_select_option",
     description:
-      "Select one or more options in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when the page version advances.",
+      "Select one or more options in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(selectOptionArgs),
   },
   handle: async (context, params) => {
@@ -546,7 +852,7 @@ export const selectOption: Tool = {
       beforePageVersion,
       input: selectParams,
       sessionId,
-      successText: `Selected option in "${selectParams.element}" in session ${sessionId}`,
+      successText: `Selected option in ${formatActionTarget(selectParams.ref, selectParams.element)} in session ${sessionId}`,
     });
   },
 };
@@ -713,7 +1019,7 @@ export const describeRef: Tool = {
   schema: {
     name: "browser_describe_ref",
     description:
-      "Return detailed context for one element ref from browser_snapshot. Use this when a compact snapshot is insufficient.",
+      "Return detailed context for one element ref from any prior Browser MCP discovery result.",
     inputSchema: zodToJsonSchema(describeRefArgs),
   },
   handle: async (context, params) => {
@@ -757,45 +1063,55 @@ export const findText: Tool = {
   schema: {
     name: "browser_find_text",
     description:
-      "Search the current page snapshot for elements matching a text query. Returns matching elements with their refs (if actionable) so you can act on them directly. Searches element names, values, and href attributes (case-insensitive).",
+      "Find the best actionable refs matching a text query on the current page and return a recommended ref for the next action.",
     inputSchema: zodToJsonSchema(findTextArgs),
   },
   handle: async (context, params) => {
-    const { sessionId, query } = findTextArgs.parse(params ?? {});
-    const snapshot = await getSnapshotResponse(context, sessionId, {
+    const { sessionId, ...filters } = findTextArgs.parse(params ?? {});
+    const discovery = await getDiscoveryState(context, sessionId, {
       preferCache: true,
     });
-    const matches = findTextInSnapshot(snapshot, query);
+    const selection = selectActionables(
+      discovery,
+      filters,
+      {
+        limit: 12,
+        maxRefsPerGroup: 4,
+      },
+    );
 
-    if (!matches.length) {
+    if (!selection.returnedMatches) {
       return textResult(
-        `No matches found for "${query}" on ${snapshot.page.url}`,
-        { sessionId, query, matches: [] },
+        `No actionable refs matched "${filters.query}" on ${discovery.page.url}`,
+        {
+          sessionId,
+          query: filters.query,
+          pageVersion: discovery.pageVersion,
+          recommendedRef: null,
+          matches: [],
+        },
       );
     }
 
     const lines = [
       `- Session ID: ${sessionId}`,
-      `- Query: "${query}"`,
-      `- Matches: ${matches.length}`,
-      ...matches.map((m) => {
-        const parts = [
-          m.ref ?? m.nodeId,
-          m.role ?? "unknown",
-          m.name ?? "unnamed",
-        ];
-        if (m.href) parts.push(m.href);
-        if (m.ref) parts.push("actionable");
-        parts.push(m.matchContext);
-        return `- ${parts.join(" | ")}`;
+      `- Page URL: ${discovery.page.url}`,
+      `- Page Title: ${discovery.page.title}`,
+      ...renderDiscoverySelection(selection, {
+        headingLabel: "Matching Actionable Areas",
       }),
     ];
 
     return textResult(lines.join("\n"), {
       sessionId,
-      query,
-      pageVersion: snapshot.snapshot.version,
-      matches,
+      query: filters.query,
+      pageVersion: discovery.pageVersion,
+      recommendedRef: selection.recommendedRef,
+      matches: selection.actionables,
+      totalMatches: selection.totalMatches,
+      returnedMatches: selection.returnedMatches,
+      truncated: selection.truncated,
+      groups: selection.groups,
     });
   },
 };
