@@ -259,6 +259,61 @@ const findTextArgs = z.object({
     .describe("Optional soft ranking preference for actionable hrefs containing this substring."),
 });
 
+const clickTextArgs = z.object({
+  sessionId: sessionIdSchema,
+  query: z
+    .string()
+    .min(1)
+    .describe("Visible text or accessible name to click on the current page."),
+  exact: z
+    .boolean()
+    .optional()
+    .describe("When true, query matching uses exact case-insensitive equality instead of substring matching."),
+  roles: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional hard role filter such as button, link, tab, or menuitem."),
+  inViewportOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, only actionable refs currently in the viewport are considered."),
+  preferVisible: z
+    .boolean()
+    .optional()
+    .describe("When true, visible actionable refs are ranked higher."),
+  preferRoles: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Optional soft ranking preference for roles such as button or link."),
+  preferHrefContains: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional soft ranking preference for actionable hrefs containing this substring."),
+});
+
+const typeTextArgs = z.object({
+  sessionId: sessionIdSchema,
+  query: z
+    .string()
+    .min(1)
+    .describe("Label, placeholder, or nearby text for the field to type into."),
+  text: z.string().describe("Text to type."),
+  submit: z.boolean().optional().describe("Whether to press Enter after typing."),
+  exact: z
+    .boolean()
+    .optional()
+    .describe("When true, query matching uses exact case-insensitive equality instead of substring matching."),
+  inViewportOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, only actionable refs currently in the viewport are considered."),
+  preferVisible: z
+    .boolean()
+    .optional()
+    .describe("When true, visible actionable refs are ranked higher."),
+});
+
 function textResult(
   text: string,
   structuredContent: Record<string, unknown>,
@@ -439,6 +494,137 @@ function renderJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+type DiscoveryActionTarget = {
+  ref: string;
+  role?: string;
+  name?: string;
+  actions: string[];
+};
+
+function summarizeTarget(target: DiscoveryActionTarget) {
+  return `${target.ref}${target.name ? ` (${target.name})` : ""}${target.role ? ` [${target.role}]` : ""}`;
+}
+
+function resolveTextDiscoveryFilters(
+  filters: {
+    query: string;
+    exact?: boolean;
+    roles?: string[];
+    inViewportOnly?: boolean;
+    preferVisible?: boolean;
+    preferRoles?: string[];
+    preferHrefContains?: string;
+  },
+  defaults: {
+    preferRoles?: string[];
+  } = {},
+) {
+  return {
+    query: filters.query,
+    exact: filters.exact,
+    roles: filters.roles,
+    inViewportOnly: filters.inViewportOnly,
+    preferVisible: filters.preferVisible,
+    preferRoles: filters.preferRoles ?? defaults.preferRoles,
+    preferHrefContains: filters.preferHrefContains,
+  };
+}
+
+async function resolveActionableByText(
+  context: Context,
+  sessionId: string,
+  filters: {
+    query: string;
+    exact?: boolean;
+    roles?: string[];
+    inViewportOnly?: boolean;
+    preferVisible?: boolean;
+    preferRoles?: string[];
+    preferHrefContains?: string;
+  },
+  options: {
+    headingLabel: string;
+    preferRoles?: string[];
+    predicate?: (target: DiscoveryActionTarget) => boolean;
+  },
+): Promise<
+  | {
+      ok: true;
+      target: DiscoveryActionTarget;
+      selection: Awaited<ReturnType<typeof selectActionables>>;
+    }
+  | {
+      ok: false;
+      result: ToolResult;
+    }
+> {
+  const discovery = await getDiscoveryState(context, sessionId, {
+    preferCache: false,
+  });
+  const selection = selectActionables(
+    discovery,
+    resolveTextDiscoveryFilters(filters, {
+      preferRoles: options.preferRoles,
+    }),
+    {
+      limit: 12,
+      maxRefsPerGroup: 4,
+      preferVisible: true,
+    },
+  );
+
+  const target = selection.actionables.find((entry) =>
+    options.predicate
+      ? options.predicate({
+          ref: entry.ref,
+          role: entry.role,
+          name: entry.name,
+          actions: entry.actions,
+        })
+      : true,
+  );
+
+  if (!target) {
+    return {
+      ok: false,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: [
+              `No actionable ref matched "${filters.query}" for ${options.headingLabel.toLowerCase()}.`,
+              ...renderDiscoverySelection(selection, {
+                headingLabel: "Closest Matches",
+              }),
+            ].join("\n"),
+          },
+        ],
+        isError: true,
+        structuredContent: {
+          error: "NO_MATCH",
+          sessionId,
+          query: filters.query,
+          pageVersion: selection.pageVersion,
+          selection,
+          matches: selection.actionables,
+          recommendedRef: selection.recommendedRef ?? null,
+        },
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    target: {
+      ref: target.ref,
+      role: target.role,
+      name: target.name,
+      actions: target.actions,
+    },
+    selection,
+  };
 }
 
 async function emitProgressMessage(
@@ -873,6 +1059,71 @@ export const click: Tool = {
   },
 };
 
+export const clickText: Tool = {
+  schema: {
+    name: "browser_click_text",
+    description:
+      "Find the best current actionable match for a text query and click it in one step. Prefer this when the intent is 'click the button/link/tab named X' and you do not want to manage refs manually.",
+    inputSchema: zodToJsonSchema(clickTextArgs),
+  },
+  handle: async (context, params) => {
+    const { sessionId, ...filters } = clickTextArgs.parse(params ?? {});
+    const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
+
+    const resolved = await resolveActionableByText(context, sessionId, filters, {
+      headingLabel: "Click",
+      preferRoles: ["button", "link", "tab", "menuitem"],
+      predicate: (target) => target.actions.includes("click"),
+    });
+    if (!resolved.ok) {
+      return resolved.result;
+    }
+
+    let target = resolved.target;
+    try {
+      await context.sendSocketMessage(
+        "browser_click",
+        { ref: target.ref },
+        undefined,
+        sessionId,
+      );
+    } catch (e) {
+      if (!isStaleRefError(e)) {
+        throw e;
+      }
+
+      const retry = await resolveActionableByText(context, sessionId, filters, {
+        headingLabel: "Click",
+        preferRoles: ["button", "link", "tab", "menuitem"],
+        predicate: (entry) => entry.actions.includes("click"),
+      });
+      if (!retry.ok) {
+        return retry.result;
+      }
+      target = retry.target;
+      await context.sendSocketMessage(
+        "browser_click",
+        { ref: target.ref },
+        undefined,
+        sessionId,
+      );
+    }
+
+    return actionResult(context, {
+      action: "click_text",
+      beforeRevision,
+      beforePageVersion,
+      input: {
+        query: filters.query,
+        resolvedRef: target.ref,
+      },
+      sessionId,
+      successText: `Clicked best match for "${filters.query}" via ${summarizeTarget(target)} in session ${sessionId}`,
+    });
+  },
+};
+
 export const hover: Tool = {
   schema: {
     name: "browser_hover",
@@ -945,6 +1196,78 @@ export const type: Tool = {
       input: typeParams,
       sessionId,
       successText: `Typed "${typeParams.text}" into ${formatActionTarget(typeParams.ref, typeParams.element)} in session ${sessionId}`,
+    });
+  },
+};
+
+export const typeText: Tool = {
+  schema: {
+    name: "browser_type_text",
+    description:
+      "Find the best current field match for a text query and type into it in one step. Prefer this when the intent is 'type into the field labeled X' and you do not want to manage refs manually.",
+    inputSchema: zodToJsonSchema(typeTextArgs),
+  },
+  handle: async (context, params) => {
+    const {
+      sessionId,
+      text,
+      submit = false,
+      ...filters
+    } = typeTextArgs.parse(params ?? {});
+    const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
+
+    const resolved = await resolveActionableByText(context, sessionId, filters, {
+      headingLabel: "Type",
+      preferRoles: ["textbox", "combobox"],
+      predicate: (target) => target.actions.includes("type"),
+    });
+    if (!resolved.ok) {
+      return resolved.result;
+    }
+
+    let target = resolved.target;
+    try {
+      await context.sendSocketMessage(
+        "browser_type",
+        { ref: target.ref, text, submit },
+        undefined,
+        sessionId,
+      );
+    } catch (e) {
+      if (!isStaleRefError(e)) {
+        throw e;
+      }
+
+      const retry = await resolveActionableByText(context, sessionId, filters, {
+        headingLabel: "Type",
+        preferRoles: ["textbox", "combobox"],
+        predicate: (entry) => entry.actions.includes("type"),
+      });
+      if (!retry.ok) {
+        return retry.result;
+      }
+      target = retry.target;
+      await context.sendSocketMessage(
+        "browser_type",
+        { ref: target.ref, text, submit },
+        undefined,
+        sessionId,
+      );
+    }
+
+    return actionResult(context, {
+      action: "type_text",
+      beforeRevision,
+      beforePageVersion,
+      input: {
+        query: filters.query,
+        text,
+        submit,
+        resolvedRef: target.ref,
+      },
+      sessionId,
+      successText: `Typed into best match for "${filters.query}" via ${summarizeTarget(target)} in session ${sessionId}`,
     });
   },
 };

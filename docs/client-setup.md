@@ -76,14 +76,16 @@ When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the d
 1. Call `browser_sessions`.
 2. Choose one or more `sessionId` values.
 3. Call `browser_session_overview` first when you need a compact page summary.
-4. Call `browser_actionables` when you need DOM refs. It returns a bounded grouped actionable inventory and accepts filters for query, roles, viewport, and limits.
-5. Call `browser_find_text` when you want a recommended actionable ref for a text query.
-6. Call `browser_run_js` when the model needs page-local batching across many targets or records, especially for discover/filter/check/dry-run/apply flows that would otherwise require many separate MCP calls. The snippet can return structured data and stream `console` output through progress notifications when the client supports them.
-7. Call `browser_describe_ref` when one specific ref needs deeper context.
-8. Call `browser_snapshot` only when you need broader page context than the grouped actionable view provides.
-9. Use action tools normally. When the page version advances, the response already includes `nextDiscovery` and `nextRefs` for the next step.
-10. Use `browser_navigate` with `waitUntil` when you need explicit navigation observation semantics.
-11. Call `browser_state` or `browser_snapshot` only when you need more detail than the action response already provides.
+4. Call `browser_click_text` when the task is simply “click the thing named X”.
+5. Call `browser_type_text` when the task is simply “type into the field named X”.
+6. Call `browser_actionables` when you need DOM refs. It returns a bounded grouped actionable inventory and accepts filters for query, roles, viewport, and limits.
+7. Call `browser_find_text` when you want a recommended actionable ref for a text query without acting yet.
+8. Call `browser_run_js` when the model needs page-local batching across many targets or records, especially for discover/filter/check/dry-run/apply flows that would otherwise require many separate MCP calls. The snippet can return structured data and stream `console` output through progress notifications when the client supports them.
+9. Call `browser_describe_ref` when one specific ref needs deeper context.
+10. Call `browser_snapshot` only when you need broader page context than the grouped actionable view provides.
+11. Use action tools normally. When the page version advances, the response already includes `nextDiscovery` and `nextRefs` for the next step.
+12. Use `browser_navigate` with `waitUntil` when you need explicit navigation observation semantics.
+13. Call `browser_state` or `browser_snapshot` only when you need more detail than the action response already provides.
 
 `sessionId` is stable for a tab across reconnects, `ref` is the primary action handle, and read tools expose `pageVersion` so agents can tell when their refs may need to be refreshed.
 

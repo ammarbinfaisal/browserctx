@@ -167,6 +167,7 @@ In practice, that means an agent can:
 - read one session while clicking in another
 - keep long-running work isolated per tab
 - use snapshots and refs for most interaction
+- use one-step text helpers for straightforward clicks and field entry
 - fall back to a JS REPL-style snippet when it needs page-local filtering, validation, or multi-step in-page logic
 
 ## Snapshots And Sessions
