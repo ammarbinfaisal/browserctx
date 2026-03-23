@@ -4,12 +4,29 @@
     <meta charset="utf-8" />
     <title>Tabductor</title>
     <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f9fb;
+        --fg: #15202b;
+        --muted: #52606d;
+        --border: #d7dee7;
+        --card-bg: #ffffff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1f2e;
+          --fg: #e2e8f0;
+          --muted: #94a3b8;
+          --border: #2d3748;
+          --card-bg: #242b3d;
+        }
+      }
       body {
         font-family: ui-sans-serif, system-ui, sans-serif;
         margin: 12px;
         width: 360px;
-        color: #15202b;
-        background: #f7f9fb;
+        color: var(--fg);
+        background: var(--bg);
       }
       label,
       input,
@@ -17,12 +34,29 @@
         display: block;
         width: 100%;
       }
-      input,
+      input {
+        margin-top: 8px;
+        margin-bottom: 8px;
+        padding: 8px;
+        box-sizing: border-box;
+        background: var(--card-bg);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
       button {
         margin-top: 8px;
         margin-bottom: 8px;
         padding: 8px;
         box-sizing: border-box;
+        background: var(--card-bg);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      button:hover {
+        opacity: 0.85;
       }
       .button-row {
         display: flex;
@@ -35,8 +69,8 @@
         white-space: pre-wrap;
         font-size: 12px;
         line-height: 1.4;
-        background: white;
-        border: 1px solid #d7dee7;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 10px;
       }
@@ -48,14 +82,14 @@
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        color: #52606d;
+        color: var(--muted);
       }
       .tab-card {
-        border: 1px solid #d7dee7;
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 10px;
         margin-top: 8px;
-        background: white;
+        background: var(--card-bg);
       }
       .tab-card button {
         width: auto;
@@ -68,9 +102,12 @@
       .tab-meta {
         font-size: 12px;
         line-height: 1.4;
-        color: #52606d;
+        color: var(--muted);
         margin-top: 4px;
         word-break: break-word;
+      }
+      .hidden {
+        display: none !important;
       }
     </style>
   </head>
@@ -84,7 +121,7 @@
     </div>
     <div class="button-row">
       <button id="connect">Connect Active Tab</button>
-      <button id="disconnect">Disconnect Active Tab</button>
+      <button id="disconnect" class="hidden">Disconnect Active Tab</button>
     </div>
     <div id="status"></div>
     <div id="connected-tabs">
