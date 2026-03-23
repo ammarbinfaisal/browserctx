@@ -124,6 +124,10 @@ export class SnapshotCache {
     return this.fresh ? this.current : null;
   }
 
+  markStale() {
+    this.fresh = false;
+  }
+
   isFresh(): boolean {
     return this.fresh;
   }

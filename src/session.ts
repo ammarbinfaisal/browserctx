@@ -22,7 +22,7 @@ import { createRpcClient } from "@/protocol/ws-rpc";
 import { SnapshotCache, SnapshotChangeSummary } from "@/snapshot-cache";
 import { logException, logInfo } from "@/utils/log";
 
-export const noConnectionMessage = `No connection to browser extension. In order to proceed, you must first connect a tab by clicking the Tabductor extension icon in the browser toolbar and clicking the 'Connect' button.`;
+export const noConnectionMessage = `No live connection to the browser extension for this tab. The session is retained and should resume once the tab loads a connectable page again. If it does not, reconnect the tab from the Tabductor extension popup.`;
 
 export type BrowserSessionState = {
   sessionId: string;
@@ -113,20 +113,41 @@ export class BrowserSession {
     return this.metadata.page?.tabId;
   }
 
+  hasReconnectableTab(): boolean {
+    return this.metadata.page?.tabId != null;
+  }
+
   assumeContinuityFrom(previous: BrowserSession) {
+    const incomingPage = this.metadata.page;
+    const incomingPageVersion = this.metadata.pageVersion;
+    const incomingCapabilities = this.metadata.capabilities;
+    const incomingExtensionVersion = this.metadata.extensionVersion;
+    const incomingBrowserName = this.metadata.browserName;
+    const incomingUserAgent = this.metadata.userAgent;
+
     this.id = previous.id;
     this.connectedAt = previous.connectedAt;
     this.stateRevision = previous.stateRevision + 1;
     this.snapshotCache = previous.snapshotCache.clone();
+    this.snapshotCache.markStale();
     this.lastRemoteSnapshotVersion = null;
     this.lastLogicalSnapshotVersion = previous.metadata.pageVersion;
     this.metadata = {
       ...previous.metadata,
-      ...this.metadata,
-      lastChange: this.metadata.lastChange ?? previous.metadata.lastChange,
-      lastInvalidation:
-        this.metadata.lastInvalidation ?? previous.metadata.lastInvalidation,
+      page: incomingPage ?? previous.metadata.page,
+      pageVersion: previous.metadata.pageVersion,
+      status: "ready",
+      capabilities: incomingCapabilities ?? previous.metadata.capabilities,
+      extensionVersion: incomingExtensionVersion ?? previous.metadata.extensionVersion,
+      browserName: incomingBrowserName ?? previous.metadata.browserName,
+      userAgent: incomingUserAgent ?? previous.metadata.userAgent,
+      lastChange: null,
+      lastInvalidation: null,
     };
+    if (incomingPageVersion != null) {
+      this.metadata.pageVersion =
+        this.toLogicalSnapshotVersion(incomingPageVersion) ?? this.metadata.pageVersion;
+    }
     for (const listener of previous.notificationListeners) {
       this.notificationListeners.add(listener);
     }
@@ -441,7 +462,7 @@ export class BrowserSession {
       this.ws = null;
       this.rpcClient = null;
       this.closedAt = new Date();
-      this.metadata.status = "closed";
+      this.metadata.status = this.hasReconnectableTab() ? "connecting" : "closed";
       this.bumpStateRevision();
       logInfo("daemon.lifecycle", "Browser session websocket closed", {
         sessionId: this.id,
@@ -455,7 +476,7 @@ export class BrowserSession {
 export class SessionManager {
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly sessionIdsByTabId = new Map<number, string>();
-  private readonly closedSessionTtlMs = 30_000;
+  private readonly closedSessionTtlMs = 10 * 60_000;
 
   add(ws: WebSocket): BrowserSession {
     this.pruneExpiredClosedSessions();
