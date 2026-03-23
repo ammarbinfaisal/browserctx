@@ -172,9 +172,19 @@ async function handleRequest(
 }
 
 async function createControlServer(): Promise<WebSocketServer> {
-  return new WebSocketServer({
-    host: mcpConfig.defaultHost,
-    port: mcpConfig.defaultControlPort,
+  return new Promise((resolve, reject) => {
+    const wss = new WebSocketServer({
+      host: mcpConfig.defaultHost,
+      port: mcpConfig.defaultControlPort,
+    });
+    wss.once("listening", () => resolve(wss));
+    wss.once("error", (error) => {
+      reject(
+        new Error(
+          `Failed to bind control server on ${mcpConfig.defaultHost}:${mcpConfig.defaultControlPort}: ${error.message}`,
+        ),
+      );
+    });
   });
 }
 

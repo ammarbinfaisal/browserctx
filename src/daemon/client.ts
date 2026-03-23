@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { RawData, WebSocket } from "ws";
-
 import { mcpConfig } from "@/config";
 import type {
   DaemonNotificationEnvelope,
@@ -46,13 +44,17 @@ type ParsedDaemonMessage =
     }
   | null;
 
-function parseMessage(raw: RawData): ParsedDaemonMessage {
+function parseMessage(data: string | ArrayBuffer | Blob): ParsedDaemonMessage {
   const text =
-    typeof raw === "string"
-      ? raw
-      : Buffer.isBuffer(raw)
-        ? raw.toString("utf8")
-        : raw.toString();
+    typeof data === "string"
+      ? data
+      : data instanceof ArrayBuffer
+        ? new TextDecoder().decode(data)
+        : null;
+
+  if (text === null) {
+    return null;
+  }
 
   try {
     const message = JSON.parse(text) as
@@ -86,24 +88,36 @@ async function openClientSocket(timeoutMs = 1000): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     const timeout = setTimeout(() => {
-      ws.terminate();
+      ws.close();
       reject(new Error(`Timed out connecting to Tabductor daemon at ${url}`));
     }, timeoutMs);
 
-    ws.once("open", () => {
-      clearTimeout(timeout);
-      resolve(ws);
-    });
+    ws.addEventListener(
+      "open",
+      () => {
+        clearTimeout(timeout);
+        resolve(ws);
+      },
+      { once: true },
+    );
 
-    ws.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
+    ws.addEventListener(
+      "error",
+      () => {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to connect to Tabductor daemon at ${url}`));
+      },
+      { once: true },
+    );
 
-    ws.once("close", () => {
-      clearTimeout(timeout);
-      reject(new Error(`Tabductor daemon is not reachable at ${url}`));
-    });
+    ws.addEventListener(
+      "close",
+      () => {
+        clearTimeout(timeout);
+        reject(new Error(`Tabductor daemon is not reachable at ${url}`));
+      },
+      { once: true },
+    );
   });
 }
 
@@ -163,8 +177,8 @@ export class DaemonClient {
   >();
 
   private constructor(private readonly ws: WebSocket) {
-    ws.on("message", (raw) => {
-      const parsed = parseMessage(raw);
+    ws.addEventListener("message", (event) => {
+      const parsed = parseMessage(event.data);
       if (!parsed) {
         return;
       }
@@ -208,13 +222,13 @@ export class DaemonClient {
       }
     };
 
-    ws.on("close", () => {
+    ws.addEventListener("close", () => {
       logInfo("daemon.lifecycle", "Tabductor daemon connection closed");
       failAll("Tabductor daemon connection closed");
     });
-    ws.on("error", (error) => {
-      logException("daemon.errors", "Tabductor daemon connection error", error);
-      failAll(`Tabductor daemon connection error: ${error.message}`);
+    ws.addEventListener("error", () => {
+      logInfo("daemon.errors", "Tabductor daemon connection error");
+      failAll("Tabductor daemon connection error");
     });
   }
 
@@ -225,8 +239,8 @@ export class DaemonClient {
   async close() {
     if (this.ws.readyState === WebSocket.OPEN) {
       await new Promise<void>((resolve) => {
+        this.ws.addEventListener("close", () => resolve(), { once: true });
         this.ws.close();
-        this.ws.once("close", () => resolve());
       });
     }
   }
@@ -342,19 +356,23 @@ export class DaemonClient {
         params,
         timeoutMs,
       });
-      this.ws.send(JSON.stringify(message), (error) => {
-        if (!error) {
-          return;
-        }
+      try {
+        this.ws.send(JSON.stringify(message));
+      } catch (error) {
         clearTimeout(timeout);
         this.pending.delete(id);
-        logException("daemon.errors", "Failed to send daemon request", error, {
-          id,
-          method,
-          params,
-        });
+        logException(
+          "daemon.errors",
+          "Failed to send daemon request",
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            id,
+            method,
+            params,
+          },
+        );
         reject(error);
-      });
+      }
     }) as Promise<DaemonRequestMap[T]["result"]>;
   }
 
