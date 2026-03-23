@@ -3,7 +3,7 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { program } from "commander";
 
-import { appConfig } from "@/config";
+import { appConfig, mcpConfig } from "@/config";
 import { Context } from "@/context";
 import { startDaemonRuntime } from "@/daemon/server";
 import { guideResources } from "@/resources/guides";
@@ -57,6 +57,7 @@ async function createServer(): Promise<Server> {
     tools,
     resources,
     context,
+    disabledToolNames: mcpConfig.tools.disabled,
   });
 }
 

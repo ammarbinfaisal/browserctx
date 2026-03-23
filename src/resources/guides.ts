@@ -58,7 +58,7 @@ Heuristics:
 - If a visible target or href is missing from \`tabductor_snapshot\`, use \`tabductor_actionables\` with filters or \`tabductor_describe_ref\`; do not assume the snapshot is a full-page DOM dump.
 - Treat \`sessionId\` as stable for a tab across reconnects.
 - Treat \`pageVersion\` as the current interaction version for that page.
-- Use \`tabductor_navigate\` with \`waitUntil\` when navigation timing matters.
+- Use \`tabductor_navigate\` with \`waitUntil\` when navigation timing matters, but only after enabling it in config.
 - Use multiple sessions in parallel, but keep writes on the same session sequential.`,
 });
 

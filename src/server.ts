@@ -17,10 +17,19 @@ type Options = {
   tools: Tool[];
   resources: Resource[];
   context: Context;
+  disabledToolNames?: string[];
 };
 
 export async function createServerWithTools(options: Options): Promise<Server> {
-  const { name, version, tools, resources, context } = options;
+  const {
+    name,
+    version,
+    tools,
+    resources,
+    context,
+    disabledToolNames = [],
+  } = options;
+  const disabledTools = new Set(disabledToolNames);
   const server = new Server(
     { name, version },
     {
@@ -34,7 +43,11 @@ export async function createServerWithTools(options: Options): Promise<Server> {
   const originalClose = server.close.bind(server);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return { tools: tools.map((tool) => tool.schema) };
+    return {
+      tools: tools
+        .filter((tool) => !disabledTools.has(tool.schema.name))
+        .map((tool) => tool.schema),
+    };
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
@@ -42,6 +55,21 @@ export async function createServerWithTools(options: Options): Promise<Server> {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    if (disabledTools.has(request.params.name)) {
+      logInfo("mcp.calls", "MCP tool disabled by config", {
+        tool: request.params.name,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Tool "${request.params.name}" is disabled by Tabductor config`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
     const tool = tools.find((tool) => tool.schema.name === request.params.name);
     if (!tool) {
       logInfo("mcp.calls", "MCP tool not found", {

@@ -29,12 +29,21 @@ Any MCP client should treat this server as:
 
 Tabductor can read settings from a config file and from environment variables.
 
-Default config file lookup:
+On first run, if no config exists yet, Tabductor writes a default global config file with `tabductor_navigate` disabled.
 
-- `tabductor.config.json`
+Default config merge order:
+
+- global user config
 - `.tabductor.json`
+- `tabductor.config.json`
 
 You can also point to a specific file with `TABDUCTOR_CONFIG`.
+
+Global user config locations:
+
+- macOS: `~/Library/Application Support/Tabductor/config.json`
+- Linux: `$XDG_CONFIG_HOME/tabductor/config.json` or `~/.config/tabductor/config.json`
+- Windows: `%APPDATA%\Tabductor\config.json`
 
 Environment variables override config-file values.
 
@@ -47,9 +56,11 @@ Preferred environment variables:
 - `TABDUCTOR_LOG_INCLUDE=category1,category2`
 - `TABDUCTOR_LOG_EXCLUDE=category1,category2`
 - `TABDUCTOR_LOG_DEST=auto|stderr|file`
-- `TABDUCTOR_LOG_FILE=/tmp/tabductor.log`
+- `TABDUCTOR_LOG_FILE=/absolute/path/to/tabductor.log`
 - `TABDUCTOR_LOG_FORMAT=text|json`
 - `TABDUCTOR_LOG_REDACT=1|0`
+- `TABDUCTOR_ENABLE_TOOLS=navigate,run_js`
+- `TABDUCTOR_DISABLE_TOOLS=run_js`
 - `TABDUCTOR_DEBUG=1`
 - `TABDUCTOR_DEBUG_FULL=1`
 
@@ -66,8 +77,11 @@ Defaults:
 - `TABDUCTOR_LOG_MODE=errors`
 - `TABDUCTOR_LOG_DEST=auto`
 - `TABDUCTOR_LOG_REDACT=1`
+- `tabductor_navigate` disabled unless explicitly enabled
 
-When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the detached daemon logs to `/tmp/tabductor.log` by default.
+When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the detached daemon logs to a platform-appropriate user log path by default.
+
+Tool names can be provided either as short names like `navigate` or full MCP names like `tabductor_navigate`.
 
 ## Recommended LLM Workflow
 
@@ -82,10 +96,10 @@ When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the d
 9. Call `tabductor_describe_ref` when one specific ref needs deeper context.
 10. Call `tabductor_snapshot` only when you need broader page context than the grouped actionable view provides.
 11. Use action tools normally. When the page version advances, the response already includes `nextDiscovery` and `nextRefs` for the next step.
-12. Use `tabductor_navigate` with `waitUntil` when you need explicit navigation observation semantics.
+12. Use `tabductor_navigate` with `waitUntil` when you need explicit navigation observation semantics, but only after enabling it in config.
 13. Call `tabductor_state` or `tabductor_snapshot` only when you need more detail than the action response already provides.
 
-`sessionId` is stable for a tab across reconnects, `ref` is the primary action handle, and read tools expose `pageVersion` so agents can tell when their refs may need to be refreshed.
+`sessionId` is stable for a tab across reconnects, including transient disconnects after failed loads. `ref` is the primary action handle, and read tools expose `pageVersion` so agents can tell when their refs may need to be refreshed.
 
 ## MCP Resources
 

@@ -26,7 +26,7 @@ This MCP server is intended to be run as a standard stdio MCP server.
 8. Call `tabductor_describe_ref` only for the specific refs that need more context.
 9. Call `tabductor_snapshot` only when the model needs broader page context than the overview or filtered actionable grouping provides.
 10. Prefer the action response first. When `pageVersion` changes, it already includes `nextDiscovery` and `nextRefs` for the next step.
-11. Use `tabductor_navigate` with `waitUntil` when navigation timing matters.
+11. Use `tabductor_navigate` with `waitUntil` when navigation timing matters, after enabling it in config.
 12. Read `tabductor_state` only when you want lightweight metadata or change summaries without another discovery read.
 
 ## Discoverable MCP Resources
@@ -46,7 +46,7 @@ The server also exposes guide resources that clients can read directly:
 - Filterable actionable reads prevent huge pages from blowing out token budgets.
 - Per-ref elaboration keeps detail on demand instead of pushing every attribute into every snapshot.
 - Structured tool results make it easier for clients to read session metadata and page-change summaries without scraping prose.
-- Reconnects do not force the model to rediscover a replacement `sessionId` for the same tab.
+- Reconnects do not force the model to rediscover a replacement `sessionId` for the same tab, including transient disconnects after failed loads.
 
 ## Current Limitation
 

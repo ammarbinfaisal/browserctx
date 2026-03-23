@@ -112,12 +112,21 @@ Go to **Settings → MCP Servers** and add:
 
 Tabductor can also read settings from a JSON config file.
 
-Default lookup order:
+On first run, if no config exists yet, Tabductor writes a default global config file with `tabductor_navigate` disabled.
 
-1. `tabductor.config.json`
+Default config loading order:
+
+1. Global user config
 2. `.tabductor.json`
+3. `tabductor.config.json`
 
 You can also point to a specific file with `TABDUCTOR_CONFIG`.
+
+Global user config locations:
+
+- macOS: `~/Library/Application Support/Tabductor/config.json`
+- Linux: `$XDG_CONFIG_HOME/tabductor/config.json` or `~/.config/tabductor/config.json`
+- Windows: `%APPDATA%\Tabductor\config.json`
 
 Example:
 
@@ -126,10 +135,12 @@ Example:
   "host": "127.0.0.1",
   "wsPort": 8765,
   "controlPort": 8766,
+  "tools": {
+    "disabled": ["navigate"]
+  },
   "log": {
     "mode": "errors",
     "dest": "auto",
-    "file": "/tmp/tabductor.log",
     "redact": true,
     "include": ["daemon.lifecycle"],
     "exclude": []
@@ -140,8 +151,9 @@ Example:
 Settings precedence is:
 
 1. built-in defaults
-2. config file
-3. environment variables
+2. global config
+3. project config
+4. environment variables
 
 Preferred environment variables use the `TABDUCTOR_` prefix, for example:
 
@@ -151,6 +163,22 @@ Preferred environment variables use the `TABDUCTOR_` prefix, for example:
 - `TABDUCTOR_LOG_MODE`
 - `TABDUCTOR_LOG_DEST`
 - `TABDUCTOR_LOG_FILE`
+- `TABDUCTOR_ENABLE_TOOLS`
+- `TABDUCTOR_DISABLE_TOOLS`
+
+Tool names can be written either as short names like `navigate` or full MCP names like `tabductor_navigate`.
+
+By default, `tabductor_navigate` is disabled. We want agents to prefer clicking links and native in-page navigation because we observed direct `navigate` calls breaking on some sites.
+
+Enable it explicitly with:
+
+```json
+{
+  "tools": {
+    "enabled": ["navigate"]
+  }
+}
+```
 
 ### 5. Use it
 
@@ -200,6 +228,7 @@ This model is what makes multi-step workflows practical without forcing the agen
 - The extension talks to the local daemon on `ws://127.0.0.1:8765`.
 - Multiple MCP clients can reuse the same local daemon.
 - If you reload the extension or change permissions, reconnect the active tab from the popup.
+- If a navigation lands on a transient network error page, the logical session is retained and will reconnect on the same tab once it returns to a normal connectable page.
 
 ## Room To Improve
 
