@@ -1,4 +1,6 @@
+import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -196,6 +198,12 @@ const runJsArgs = z.object({
     .max(120000)
     .optional()
     .describe("Maximum time to allow the snippet to run before failing."),
+  outputPath: z
+    .string()
+    .optional()
+    .describe(
+      "Absolute file path to write the full tool result to. When provided, the result text is written to this file and the tool returns a short summary instead of the full output.",
+    ),
 });
 
 const screenshotArgs = z.object({
@@ -1438,6 +1446,7 @@ export const runJs: Tool = {
       args,
       pageVersion,
       timeoutMs = 30000,
+      outputPath,
     } = runJsArgs.parse(params ?? {});
     const runId = randomUUID();
     const beforeRevision = await context.getStateRevision(sessionId);
@@ -1532,8 +1541,34 @@ export const runJs: Tool = {
         : `tabductor_run_js failed for session ${sessionId}: ${runResult.error?.message ?? "unknown error"}`,
     );
 
+    const fullText = lines.join("\n\n");
+
+    if (outputPath) {
+      if (!isAbsolute(outputPath)) {
+        return {
+          content: [{ type: "text", text: `Error: outputPath must be an absolute path, got: ${outputPath}` }],
+          isError: true,
+        };
+      }
+      await writeFile(outputPath, fullText, "utf-8");
+      const charCount = fullText.length;
+      const summary = `${(charCount / 1024).toFixed(1)}kb, ${charCount} chars written to ${outputPath}`;
+      return {
+        content: [{ type: "text", text: summary }],
+        isError: !runResult.success,
+        structuredContent: {
+          ...(stateResult.structuredContent ?? {}),
+          runId: runResult.runId ?? runId,
+          run: runResult,
+          logs: resultLogs,
+          outputPath,
+          charCount,
+        },
+      };
+    }
+
     return {
-      content: [{ type: "text", text: lines.join("\n\n") }],
+      content: [{ type: "text", text: fullText }],
       isError: !runResult.success,
       structuredContent: {
         ...(stateResult.structuredContent ?? {}),
