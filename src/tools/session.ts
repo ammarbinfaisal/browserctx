@@ -1518,15 +1518,31 @@ export const runJs: Tool = {
     const resultLogs = runResult.logs.length ? runResult.logs : streamedLogs;
     const stateText =
       stateResult.content.find((content) => content.type === "text")?.text ?? "";
+    let returnValueLine: string;
+    if (outputPath) {
+      if (!isAbsolute(outputPath)) {
+        return {
+          content: [{ type: "text", text: `Error: outputPath must be an absolute path, got: ${outputPath}` }],
+          isError: true,
+        };
+      }
+      const fileContent = renderJson(runResult.result);
+      await writeFile(outputPath, fileContent, "utf-8");
+      const charCount = fileContent.length;
+      returnValueLine = `Return Value: ${(charCount / 1024).toFixed(1)}kb, ${charCount} chars written to ${outputPath}`;
+    } else {
+      returnValueLine = runResult.result !== undefined
+        ? `Return Value:\n${renderJson(runResult.result)}`
+        : "Return Value: undefined";
+    }
+
     const lines = [
       `Run ID: ${runResult.runId ?? runId}`,
       `Duration: ${runResult.durationMs} ms`,
       runResult.success
         ? null
         : `Error: ${runResult.error?.message ?? "Unknown JavaScript execution failure"}`,
-      runResult.result !== undefined
-        ? `Return Value:\n${renderJson(runResult.result)}`
-        : "Return Value: undefined",
+      returnValueLine,
       resultLogs.length
         ? `Console Logs:\n${resultLogs.map(formatConsoleEntry).join("\n")}`
         : "Console Logs: none",
@@ -1541,40 +1557,15 @@ export const runJs: Tool = {
         : `tabductor_run_js failed for session ${sessionId}: ${runResult.error?.message ?? "unknown error"}`,
     );
 
-    const fullText = lines.join("\n\n");
-
-    if (outputPath) {
-      if (!isAbsolute(outputPath)) {
-        return {
-          content: [{ type: "text", text: `Error: outputPath must be an absolute path, got: ${outputPath}` }],
-          isError: true,
-        };
-      }
-      await writeFile(outputPath, fullText, "utf-8");
-      const charCount = fullText.length;
-      const summary = `${(charCount / 1024).toFixed(1)}kb, ${charCount} chars written to ${outputPath}`;
-      return {
-        content: [{ type: "text", text: summary }],
-        isError: !runResult.success,
-        structuredContent: {
-          ...(stateResult.structuredContent ?? {}),
-          runId: runResult.runId ?? runId,
-          run: runResult,
-          logs: resultLogs,
-          outputPath,
-          charCount,
-        },
-      };
-    }
-
     return {
-      content: [{ type: "text", text: fullText }],
+      content: [{ type: "text", text: lines.join("\n\n") }],
       isError: !runResult.success,
       structuredContent: {
         ...(stateResult.structuredContent ?? {}),
         runId: runResult.runId ?? runId,
         run: runResult,
         logs: resultLogs,
+        ...(outputPath ? { outputPath } : {}),
       },
     };
   },
