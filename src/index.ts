@@ -29,6 +29,7 @@ const tools: Tool[] = [
   session.actionables,
   session.snapshot,
   session.navigate,
+  session.newTab,
   session.click,
   session.clickText,
   session.hover,

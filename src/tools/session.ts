@@ -97,6 +97,13 @@ const overviewArgs = z.object({
   sessionId: sessionIdSchema,
 });
 
+const newTabArgs = z.object({
+  sessionId: sessionIdSchema.describe(
+    "An existing connected session to open the tab from. The new tab opens in the same browser window.",
+  ),
+  url: z.string().min(1).describe("URL to open in the new tab."),
+});
+
 const navigateArgs = z.object({
   sessionId: sessionIdSchema,
   url: z.string().min(1).describe("URL to navigate to."),
@@ -1026,6 +1033,72 @@ export const navigate: Tool = {
       waitUntil,
       timeoutMs,
     });
+  },
+};
+
+export const newTab: Tool = {
+  schema: {
+    name: "tabductor_new_tab",
+    description:
+      "Open a new browser tab with a URL and return the new session ID once it connects. Requires an existing connected session to identify the browser window.",
+    inputSchema: zodToJsonSchema(newTabArgs),
+  },
+  handle: async (context, params) => {
+    const { sessionId, url } = newTabArgs.parse(params ?? {});
+    const beforeSessions = await context.listSessions();
+    const beforeSessionIds = new Set(beforeSessions.map((s) => s.sessionId));
+
+    const { tabId } = await context.sendSocketMessage(
+      "tabductor_new_tab",
+      { url },
+      undefined,
+      sessionId,
+    );
+
+    // Wait for the new tab's session to appear (up to 10 seconds).
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const currentSessions = await context.listSessions();
+      const newSession = currentSessions.find(
+        (s) =>
+          !beforeSessionIds.has(s.sessionId) &&
+          s.page?.tabId === tabId &&
+          s.status === "ready",
+      );
+      if (newSession) {
+        const lines = [
+          `Opened new tab with session ${newSession.sessionId}`,
+          `URL: ${newSession.page?.url ?? url}`,
+          `Title: ${newSession.page?.title ?? "unknown"}`,
+          `Tab ID: ${tabId}`,
+          `Page Version: ${newSession.pageVersion ?? "unknown"}`,
+        ];
+        return textResult(lines.join("\n"), {
+          action: "new_tab",
+          input: { url, sourceSessionId: sessionId },
+          newSessionId: newSession.sessionId,
+          tabId,
+          session: newSession,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `New tab created (tabId ${tabId}) but session did not connect within 10 seconds. Use tabductor_sessions to check for its arrival.`,
+        },
+      ],
+      isError: true,
+      structuredContent: {
+        error: "SESSION_TIMEOUT",
+        action: "new_tab",
+        input: { url, sourceSessionId: sessionId },
+        tabId,
+      },
+    };
   },
 };
 

@@ -283,6 +283,16 @@
         return { acknowledged: true };
       case "tabductor_get_console_logs":
         return state.consoleLogs.slice(-200);
+      case "tabductor_new_tab": {
+        const response = await chrome.runtime.sendMessage({
+          type: "tabductor:new-tab",
+          url: payload.url,
+        });
+        if (!response?.ok) {
+          throw new Error(response?.error?.message || "Failed to open new tab");
+        }
+        return response.data;
+      }
       case "tabductor_screenshot": {
         const response = await chrome.runtime.sendMessage({
           type: "tabductor:capture-screenshot",

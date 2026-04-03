@@ -56,6 +56,11 @@ async function handleRuntimeMessage(message, sender) {
     case "tabductor:popup-set-server-url":
       await chrome.storage.local.set({ [SERVER_URL_KEY]: message.serverUrl });
       return { ok: true };
+    case "tabductor:new-tab":
+      return {
+        ok: true,
+        data: await openNewTab(message.url, sender.tab),
+      };
     case "tabductor:capture-screenshot":
       if (sender.tab?.id == null) {
         throw new Error("No sender tab for screenshot");
@@ -195,6 +200,51 @@ async function disconnectTabById(tabId) {
   } catch (_error) {
     // Ignore missing receiver errors during disconnect.
   }
+}
+
+async function openNewTab(url, senderTab) {
+  const serverUrl = senderTab?.id != null
+    ? (await getConnectedTabs())[String(senderTab.id)] || await getServerUrl()
+    : await getServerUrl();
+
+  const tab = await chrome.tabs.create({
+    url,
+    active: false,
+    ...(senderTab?.windowId != null ? { windowId: senderTab.windowId } : {}),
+  });
+
+  if (!tab.id) {
+    throw new Error("Failed to create new tab");
+  }
+
+  // Wait for the tab to finish loading before injecting the content script.
+  await new Promise((resolve) => {
+    const listener = (tabId, changeInfo) => {
+      if (tabId === tab.id && changeInfo.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+
+    // If the tab is already complete, resolve immediately.
+    chrome.tabs.get(tab.id).then((current) => {
+      if (current.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    });
+  });
+
+  await ensureContentScript(tab.id);
+  await setConnectedTab(tab.id, serverUrl);
+  await chrome.tabs.sendMessage(tab.id, {
+    type: "tabductor:connect",
+    serverUrl,
+    tabInfo: toTabInfo(tab),
+  });
+
+  return { tabId: tab.id };
 }
 
 async function getActiveTab() {

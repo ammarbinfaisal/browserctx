@@ -239,6 +239,14 @@ export type BrowserRequestMap = {
     payload: {};
     result: BrowserConsoleEntry[];
   };
+  tabductor_new_tab: {
+    payload: {
+      url: string;
+    };
+    result: {
+      tabId: number;
+    };
+  };
   tabductor_screenshot: {
     payload: {};
     result: string;

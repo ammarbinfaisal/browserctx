@@ -180,7 +180,7 @@ function defaultConfigText() {
       wsPort: 8765,
       controlPort: 8766,
       tools: {
-        disabled: ["navigate"],
+        disabled: ["navigate", "new_tab"],
       },
       log: {
         mode: "errors",
@@ -308,7 +308,7 @@ function normalizedToolNames(values: string[] | undefined): string[] {
   return [...new Set(values.map(normalizeToolName).filter(Boolean))];
 }
 
-const defaultDisabledTools = normalizedToolNames(["navigate"]);
+const defaultDisabledTools = normalizedToolNames(["navigate", "new_tab"]);
 const envEnabledTools = normalizedToolNames(envCsv("TABDUCTOR_ENABLE_TOOLS"));
 const envDisabledTools = normalizedToolNames(envCsv("TABDUCTOR_DISABLE_TOOLS"));
 const disabledToolNames = new Set(defaultDisabledTools);
